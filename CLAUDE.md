@@ -286,11 +286,17 @@ shared one deliberately wins wherever it exists, so a fix to the template
 reaches this app without re-vendoring; refresh the copy (and commit it)
 when the template gains something this app needs.
 
-## Clicking a memory bar: who is holding it, and ending them
+## Double-clicking VRAM or RAM: who is holding it, and ending them
 
-The VRAM and RAM meters are clickable (`Metric.breakdown`, `"gpu"` /
-`"ram"`); `monitor\processes.py` is the panel, `monitor\breakdown.py` the
-data behind it, both grouped per executable, sorted descending, with
+The trigger is a **double-click on the word** "VRAM" or "RAM"
+(`Metric.breakdown`, `"gpu"` / `"ram"`; `RowLabel` in
+`monitor\meter.py`), not a click on the bar. Ivan asked for both halves
+of that: a deliberate gesture, on a named counter, so there is no way to
+end up reading the wrong one -- which is also why the panel is titled
+with that same word rather than "Video memory"/"System memory". The
+label carries no layout stretch, so the target is exactly as wide as the
+text looks; `monitor\processes.py` is the panel, `monitor\breakdown.py`
+the data behind it, both grouped per executable, sorted descending, with
 everything under 512 MB left out — Ivan's threshold, and the reason the
 panel's total never matches the bar.
 
@@ -316,10 +322,12 @@ to find:
   in one call: **17 ms**, byte-identical figures (verified against psutil
   process by process). The psutil path is still there as a fallback if
   the struct ever stops matching.
-- **A click on a bar must not stop the card being dragged.** `Meter`
-  swallows the press, then decides on release: moved more than
-  `DRAG_SLOP` and it emits `drag_requested`, which calls
-  `Overlay.begin_drag()`; released in place and it emits `clicked`.
+- **Swallowing the press is what makes the double-click possible.**
+  Let it through and the window starts its system move on the *first*
+  press, so the second click never arrives. `RowLabel` holds the press,
+  hands the drag back through `drag_requested` -> `Overlay.begin_drag()`
+  if the pointer travels more than `DRAG_SLOP`, and otherwise does
+  nothing until `mouseDoubleClickEvent`.
 
 ### Ending processes: what protects Ivan from this
 

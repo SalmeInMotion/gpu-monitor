@@ -305,13 +305,14 @@ class Overlay(QWidget):
             for metric in M.metrics_in(group):
                 row = MeterRow(metric, block)
                 if metric.breakdown:
-                    row.meter.set_interactive(True)
-                    row.meter.clicked.connect(
+                    row.label.set_interactive(
+                        True, f"Double-click: what is using {metric.label}")
+                    row.label.activated.connect(
                         lambda k=metric.breakdown: self.show_breakdown(k))
-                    # The bar swallowed the press to tell a click from a
+                    # The word swallowed the press to tell a click from a
                     # drag; if it turned out to be a drag, it hands the
                     # card's own move back to us.
-                    row.meter.drag_requested.connect(self.begin_drag)
+                    row.label.drag_requested.connect(self.begin_drag)
                 lay.addWidget(row)
                 lay.addSpacing(ROW_GAP)
                 self._rows[metric.key] = row

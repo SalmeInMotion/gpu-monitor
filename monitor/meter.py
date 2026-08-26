@@ -73,17 +73,71 @@ def ramp_colors(fraction):
     return RAMP[-1][1], RAMP[-1][2]
 
 
-class Meter(QWidget):
-    """The bar itself. `set_value(None)` is the no-data state.
+class RowLabel(QLabel):
+    """A metric's name, and for VRAM and RAM a way in.
 
-    The two memory bars are clickable. That has to coexist with the whole
-    card being a drag handle, so the press is held here and only decided
-    on release: moved more than DRAG_SLOP and it was a drag, which is
-    handed back to the window; released in place and it was a click.
+    Double-click, not single, and on the word rather than the bar: Ivan
+    asked for both, so that opening the breakdown is a deliberate act on
+    a named counter and there is no way to end up looking at the wrong
+    one. The word is also exactly as wide as its text (see MeterRow), so
+    the target is what it looks like.
+
+    Holding the press is what makes this coexist with the whole card
+    being a drag handle: let it through and the window's system move
+    starts on the first press, and the second click never arrives.
     """
 
-    clicked = Signal()
+    activated = Signal()
     drag_requested = Signal()
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._interactive = False
+        self._press_at = None
+
+    def set_interactive(self, on, tip=""):
+        self._interactive = bool(on)
+        if on:
+            self.setCursor(Qt.PointingHandCursor)
+            self.setToolTip(tip)
+        else:
+            self.unsetCursor()
+            self.setToolTip("")
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt naming
+        if self._interactive and event.button() == Qt.LeftButton:
+            self._press_at = event.globalPosition().toPoint()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802 - Qt naming
+        if self._press_at is None:
+            super().mouseMoveEvent(event)
+            return
+        if (event.globalPosition().toPoint()
+                - self._press_at).manhattanLength() > DRAG_SLOP:
+            self._press_at = None
+            self.drag_requested.emit()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt naming
+        if self._press_at is not None:
+            self._press_at = None
+            event.accept()      # a single click does nothing on purpose
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt naming
+        if self._interactive and event.button() == Qt.LeftButton:
+            self._press_at = None
+            self.activated.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+class Meter(QWidget):
+    """The bar itself. `set_value(None)` is the no-data state."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -106,45 +160,9 @@ class Meter(QWidget):
         self._delay.setSingleShot(True)
         self._delay.timeout.connect(self._anim.start)
 
-        self._interactive = False
-        self._press_at = None
 
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_compact(False)
-
-    def set_interactive(self, on):
-        """Whether this bar answers a click. The hand cursor is the only
-        hint that it does, so it is not optional."""
-        self._interactive = bool(on)
-        if on:
-            self.setCursor(Qt.PointingHandCursor)
-        else:
-            self.unsetCursor()
-
-    def mousePressEvent(self, event):  # noqa: N802 - Qt naming
-        if self._interactive and event.button() == Qt.LeftButton:
-            self._press_at = event.globalPosition().toPoint()
-            event.accept()
-            return
-        # Not ours: let it reach the window, which starts the card's drag.
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):  # noqa: N802 - Qt naming
-        if self._press_at is None:
-            super().mouseMoveEvent(event)
-            return
-        moved = (event.globalPosition().toPoint() - self._press_at)
-        if moved.manhattanLength() > DRAG_SLOP:
-            self._press_at = None
-            self.drag_requested.emit()
-
-    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt naming
-        if self._press_at is not None:
-            self._press_at = None
-            self.clicked.emit()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
 
     def set_compact(self, compact):
         self.setFixedHeight(BAR_HEIGHT_COMPACT if compact else BAR_HEIGHT)
@@ -265,12 +283,16 @@ class MeterRow(QWidget):
         line = QHBoxLayout()
         line.setContentsMargins(0, 0, 0, 0)
         line.setSpacing(6)
-        self.label = QLabel(metric.label)
+        self.label = RowLabel(metric.label)
         self.label.setProperty("role", "label")
         self.value = QLabel("--")
         self.value.setProperty("role", "value")
         self.value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        line.addWidget(self.label, 1)
+        # No stretch on the label: it has to be as wide as the word,
+        # or double-clicking blank space to its right would open the
+        # panel too and the target would not be what it looks like.
+        line.addWidget(self.label, 0)
+        line.addStretch(1)
         line.addWidget(self.value, 0)
         self._line = line
         self._lay.addLayout(line)

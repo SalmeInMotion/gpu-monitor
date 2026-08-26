@@ -230,8 +230,8 @@ settle()
 panel.set_entries(bd.KIND_RAM, rows)
 settle()
 check("panel lists what it was given", panel.list.topLevelItemCount() == 2)
-check("panel titles itself for the kind", panel.title.text() == "System memory",
-      panel.title.text())
+check("panel titles itself with the row's own word",
+      panel.title.text() == "RAM", panel.title.text())
 check("panel totals what it lists", panel.total.text() == bd.fmt_bytes(
       sum(e.bytes for e in rows)), panel.total.text())
 check("End is disabled with nothing chosen", not panel.btn_end.isEnabled())
@@ -253,6 +253,51 @@ check("End would only touch the unprotected pids",
 check("the 512 MB rule is stated in the panel",
       "512 MB" in panel.hint.text(), panel.hint.text())
 panel.close()
+
+print("\n-- opening it: double-click, on the word, not the bar --")
+from PySide6.QtCore import QPoint, QPointF
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication
+
+vram_label = ov._rows["vram"].label
+gpu_label = ov._rows["gpu"].label
+check("the memory rows' words are interactive", vram_label._interactive)
+check("a load metric's word is not", not gpu_label._interactive)
+check("the bar itself is no longer a target",
+      not hasattr(ov._rows["vram"].meter, "_interactive"))
+check("the word is only as wide as the word",
+      vram_label.width() < ov._rows["vram"].width() // 2,
+      f"label={vram_label.width()} row={ov._rows['vram'].width()}")
+
+opened = []
+vram_label.activated.connect(lambda: opened.append("vram"))
+
+def send(widget, kind):
+    centre = QPointF(widget.width() / 2, widget.height() / 2)
+    glob = QPointF(widget.mapToGlobal(centre.toPoint()))
+    QApplication.sendEvent(widget, QMouseEvent(
+        kind, centre, glob, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+
+send(vram_label, QMouseEvent.Type.MouseButtonPress)
+send(vram_label, QMouseEvent.Type.MouseButtonRelease)
+settle()
+check("a single click does nothing", opened == [], str(opened))
+
+send(vram_label, QMouseEvent.Type.MouseButtonDblClick)
+settle()
+check("a double click opens it", opened == ["vram"], str(opened))
+
+dragged = []
+vram_label.drag_requested.connect(lambda: dragged.append(1))
+send(vram_label, QMouseEvent.Type.MouseButtonPress)
+far = QPointF(vram_label.width() / 2 + 40, vram_label.height() / 2)
+QApplication.sendEvent(vram_label, QMouseEvent(
+    QMouseEvent.Type.MouseMove, far,
+    QPointF(vram_label.mapToGlobal(far.toPoint())),
+    Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+settle()
+check("dragging off the word still moves the card", dragged == [1], str(dragged))
+
 
 print("\n-- context menu --")
 menu = ov.build_menu()

@@ -36,7 +36,10 @@ ROW_HEIGHT = 22         # kept in step with the QSS below
 
 REFRESH_MS = 2000       # slower than the card: this walks the process table
 
-TITLES = {bd.KIND_GPU: "Video memory", bd.KIND_RAM: "System memory"}
+# The same words the rows carry. "Video memory"/"System memory"
+# read as near-synonyms at a glance, which is exactly the mix-up
+# this panel must not invite.
+TITLES = {bd.KIND_GPU: "VRAM", bd.KIND_RAM: "RAM"}
 
 
 class ProcessPanel(QWidget):
