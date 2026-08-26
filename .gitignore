@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+# Local working files, not part of the tool
+_backups/
+_tip.png
+tests/_scratch_appdata/
+
+# Ivan's own leftover config from the tkinter version: migrate_legacy()
+# reads it once on his machine, and it carries his window position, so it
+# has no business in a clone.
+vram_monitor_config.json
