@@ -21,8 +21,10 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 os.environ["QT_QPA_FONTDIR"] = "C:/Windows/Fonts"
 os.environ["SUPERVISOR_BRIDGE"] = "0"
 
-sys.path.insert(0, r"C:\IA\Tools\Apps\GPU_Monitor")
-sys.path.insert(0, r"C:\IA\Tools\Windows\Template")
+sys.path.insert(0, os.path.dirname(HERE))
+from monitor.template import ensure_on_path
+
+ensure_on_path()
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
@@ -117,6 +119,36 @@ check("0% still reads 0%, not --", ov._rows["gpu"].value.text() == "0%",
 check("0% bar keeps a sliver", ov._rows["gpu"].meter._value == 0.0)
 ov.on_sample(SAMPLE)
 settle()
+
+print("\n-- a GPU with no thermal sensor (AMD / Intel fallback) --")
+# What the Windows-counter backend produces: utilisation and video
+# memory, nothing else. The four rows it cannot measure must go away
+# rather than sit there reading "--" forever.
+amd = dict.fromkeys(SAMPLE)
+amd.update(gpu_name="Radeon 8060S", mem_used=32370.0, mem_total=98304.0,
+           util=3.0, cpu=11.0, cpu_freq=3800.0,
+           ram_used=14000.0, ram_total=32360.0)
+partial = Overlay(ctx.settings, ctx.theme)
+# Must be shown: children of a window that was never shown all report
+# isVisible() False, which would make the "row is gone" checks below pass
+# without proving anything.
+partial.show()
+partial.on_sample(amd)
+for _ in range(4):
+    ctx.app.processEvents()
+check("vram and usage survive", partial._rows["vram"].isVisible()
+      and partial._rows["gpu"].isVisible())
+check("unmeasurable rows are dropped, not left showing --",
+      not partial._rows["temp"].isVisible()
+      and not partial._rows["power"].isVisible())
+check("no error line: the GPU block does have data",
+      not partial._errors["gpu"].isVisible())
+check("adapter name still reaches the header",
+      partial._headers["gpu"].label.text() == "Radeon 8060S",
+      partial._headers["gpu"].label.text())
+check("cpu and ram unaffected", partial._rows["cpu"].isVisible()
+      and partial._rows["ram"].isVisible())
+partial.deleteLater()
 
 print("\n-- lifetime and geometry regressions --")
 from PySide6.QtCore import QVariantAnimation

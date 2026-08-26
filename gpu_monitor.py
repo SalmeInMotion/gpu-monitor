@@ -17,27 +17,12 @@ import os
 import sys
 
 
-def _template_dir():
-    """Where app_template lives, most specific first.
+# Puts the project and app_template on sys.path; see monitor/template.py
+# for why the shared copy beats the bundled one.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from monitor.template import ensure_on_path  # noqa: E402
 
-    Hardcoding Ivan's own path made the app unrunnable anywhere else,
-    which matters now that this is a public repo and runs on a second
-    machine. The shared copy still wins where it exists, so a fix to the
-    template reaches this app without a re-vendor; `vendor/` is the
-    fallback that makes a fresh clone work on its own.
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    for candidate in (os.environ.get("GPU_MONITOR_TEMPLATE"),
-                      r"C:\IA\Tools\Windows\Template",
-                      os.path.join(here, "vendor")):
-        if candidate and os.path.isdir(os.path.join(candidate, "app_template")):
-            return candidate
-    raise SystemExit(
-        "app_template not found. Set GPU_MONITOR_TEMPLATE to the folder "
-        "that contains it, or keep the bundled copy in vendor/.")
-
-
-sys.path.insert(0, _template_dir())
+ensure_on_path()
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QIcon
