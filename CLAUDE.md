@@ -259,10 +259,15 @@ a clone of the repo. Update it with `git pull`, not by copying files.
   not a fault.
 - Autostart is on: the same `HKCU\...\Run` entry, written by
   `monitor\autostart.py`.
-- The **Supervisor bridge is not installed there**, so the app logs a
-  warning at startup and cannot be inspected live. Copy
-  `C:\IA\Tools\Claude\Supervisor\bridge` over if that is ever needed —
-  ask Ivan first, it opens a localhost port on that box.
+- The **Supervisor bridge is installed there** too (copied 2026-08-26 to
+  `C:\IA\Tools\Claude\Supervisor\bridge`, the same path as here), so a
+  card on that machine can be read and driven live exactly as on
+  chofostation. It is a plain copy of a repo that has no remote, so it
+  does not update itself: re-copy the `bridge\` folder when the bridge
+  gains something. Verified on arrival with a throwaway Qt app rather
+  than by restarting Ivan's card -- `attach()` only reports failures to
+  stderr, which does not exist under pythonw, so a broken install is
+  completely silent.
 - **An SSH shell is session 0.** A GUI launched from there gets an
   invisible window station: the process runs and logs fine, but nothing
   appears on the desktop. To put the card on his actual screen, create a
