@@ -190,7 +190,7 @@ ov.on_sample(SAMPLE)
 settle()
 
 print("\n-- memory breakdown: grouping, threshold, order --")
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QPoint, QRect
 from monitor import breakdown as bd
 from monitor.processes import ProcessPanel
 
@@ -224,7 +224,7 @@ check("terminate refuses our own process",
       bd.terminate([_os.getpid()]) == (0, 0, 1))
 
 print("\n-- the process panel --")
-panel = ProcessPanel(ctx.theme)
+panel = ProcessPanel(ctx.theme, ctx.settings)
 panel.open_for(bd.KIND_RAM, QRect(200, 200, 312, 494))
 settle()
 panel.set_entries(bd.KIND_RAM, rows)
@@ -253,6 +253,54 @@ check("End would only touch the unprotected pids",
 check("the 512 MB rule is stated in the panel",
       "512 MB" in panel.hint.text(), panel.hint.text())
 panel.close()
+
+print("\n-- the panel is a satellite of the card --")
+# Through the overlay's own panel, not a loose one: the following is
+# wired in Overlay.moveEvent, so a standalone instance proves nothing.
+# Near the top-left, and small steps: follow() clamps to the screen so a
+# followed panel can never end up unreachable, and the offscreen screen
+# here is only 800x800 -- a big jump would hit that clamp, not a bug.
+ov.move(20, 20)
+ov.show_breakdown(bd.KIND_RAM)
+settle()
+sat = ov._panel
+check("the card owns a panel once opened", sat is not None and sat.isVisible())
+check("it has a close button of its own", sat.btn_close.isVisible())
+first = sat.pos()
+
+ov.move(ov.x() + 40, ov.y() + 30)
+settle()
+check("moving the card takes it along",
+      sat.pos() == first + QPoint(40, 30),
+      f"{sat.pos()} vs {first + QPoint(40, 30)}")
+
+# dragging the panel itself re-sets where it rides from then on
+sat.move(sat.x() - 60, sat.y() + 20)
+settle()
+moved = sat.pos()
+ov.move(ov.x() + 25, ov.y())
+settle()
+check("a hand-placed panel keeps its new offset",
+      sat.pos() == moved + QPoint(25, 0), f"{sat.pos()} vs {moved + QPoint(25, 0)}")
+
+ctx.settings["opacity"] = 50
+ov.apply_theme()
+check("it inherits the card's transparency", sat._fill.alpha() == 128,
+      str(sat._fill.alpha()))
+ctx.settings["opacity"] = 100
+ov.apply_theme()
+check("...and follows it back to opaque", sat._fill.alpha() == 255)
+
+ov.show_breakdown(bd.KIND_RAM)
+settle()
+check("the same word again closes it", not sat.isVisible())
+ov.show_breakdown(bd.KIND_RAM)
+settle()
+check("and opens it again", sat.isVisible())
+sat.btn_close.click()
+settle()
+check("the close button closes it", not sat.isVisible())
+
 
 print("\n-- opening it: double-click, on the word, not the bar --")
 from PySide6.QtCore import QPoint, QPointF

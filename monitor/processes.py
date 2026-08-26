@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout,
                                QHeaderView, QLabel, QMessageBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from . import breakdown as bd
+from .chrome import ChromeButton, GLYPH_CLOSE, chrome_qss
 
 log = logging.getLogger("gpu_monitor.processes")
 
@@ -47,10 +48,17 @@ class ProcessPanel(QWidget):
 
     refresh_requested = Signal(str)     # kind
 
-    def __init__(self, theme, parent=None):
+    def __init__(self, theme, settings, parent=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint)
         self.theme = theme
+        self.settings = settings
+        # Where the panel sits relative to the card, so it can travel with
+        # it. Ivan dragged the card to another monitor and the panel stayed
+        # behind on the first one.
+        self._offset = QPoint(0, 0)
+        self._card_pos = None
+        self._following = False
         self._muted = "#909093"
         self._clearing = False
         self.kind = bd.KIND_RAM
@@ -76,8 +84,12 @@ class ProcessPanel(QWidget):
         self.title = QLabel(objectName="PanelTitle")
         self.total = QLabel(objectName="PanelTotal")
         self.total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.btn_close = ChromeButton(GLYPH_CLOSE, "Close", self.card)
+        self.btn_close.clicked.connect(self.close)
         head.addWidget(self.title, 1)
         head.addWidget(self.total, 0)
+        head.addSpacing(2)
+        head.addWidget(self.btn_close, 0)
         body.addLayout(head)
         body.addSpacing(10)
 
@@ -148,6 +160,45 @@ class ProcessPanel(QWidget):
             return
         super().keyPressEvent(event)
 
+    def follow(self, card_rect):
+        """Keep station on the card. Called whenever the card moves."""
+        self._card_pos = card_rect.topLeft()
+        if not self.isVisible():
+            return
+        self._following = True
+        try:
+            self.move(self._clamped(self._card_pos + self._offset))
+        finally:
+            self._following = False
+
+    def moveEvent(self, event):  # noqa: N802 - Qt naming
+        super().moveEvent(event)
+        # Any move that was not follow()'s own is the user dragging the
+        # panel, which re-sets where it rides from then on.
+        if not self._following and self._card_pos is not None:
+            self._offset = self.pos() - self._card_pos
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt naming
+        """The panel is frameless, so its own background is the handle.
+        Without this there was no way to move it at all."""
+        if event.button() == Qt.LeftButton:
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+                return
+        super().mousePressEvent(event)
+
+    def _clamped(self, point):
+        from PySide6.QtGui import QGuiApplication
+        rect = QRect(point, self.size())
+        screen = (QGuiApplication.screenAt(rect.center())
+                  or QGuiApplication.screenAt(point)
+                  or QGuiApplication.primaryScreen())
+        area = screen.availableGeometry()
+        x = max(area.left(), min(point.x(), area.right() - self.width()))
+        y = max(area.top(), min(point.y(), area.bottom() - self.height()))
+        return QPoint(x, y)
+
     def _place(self, anchor):
         """To the right of the card if it fits, otherwise to its left, and
         never off the screen the card is on."""
@@ -160,7 +211,13 @@ class ProcessPanel(QWidget):
             x = anchor.left() - self.width() - 4
         x = max(area.left(), min(x, area.right() - self.width()))
         y = max(area.top(), min(anchor.top(), area.bottom() - height))
-        self.move(x, y)
+        self._card_pos = anchor.topLeft()
+        self._offset = QPoint(x, y) - self._card_pos
+        self._following = True
+        try:
+            self.move(x, y)
+        finally:
+            self._following = False
 
     # --- data --------------------------------------------------------------
 
@@ -290,7 +347,12 @@ class ProcessPanel(QWidget):
         tokens = self.theme.tokens or {}
         if not tokens:
             return
-        self._fill = QColor(tokens["SURFACE"])
+        fill = QColor(tokens["SURFACE"])
+        # Same alpha the card paints itself with, so the two surfaces read
+        # as one thing rather than a solid panel stuck to a see-through card.
+        fill.setAlpha(max(0, min(255, round(
+            int(self.settings.get("opacity", 100)) / 100.0 * 255))))
+        self._fill = fill
         self._muted = tokens["TEXT_45"]
         self.setStyleSheet(self._qss(tokens))
         self.update()
@@ -354,7 +416,7 @@ QPushButton#PanelDanger:disabled {{
     color: {t['TEXT_45']};
     border-color: {t['DIVIDER']};
 }}
-"""
+""" + chrome_qss(t)
 
     def paintEvent(self, event):  # noqa: N802 - Qt naming
         """Card fill plus the shadow outside it, the same way the overlay

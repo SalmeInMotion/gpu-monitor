@@ -329,6 +329,32 @@ to find:
   if the pointer travels more than `DRAG_SLOP`, and otherwise does
   nothing until `mouseDoubleClickEvent`.
 
+### The panel is a satellite, not a window of its own
+
+Reported as "se queda abierta y no puedo moverla ni cerrarla". Four
+things answer that, and the first two are easy to undo by accident:
+
+- **It travels with the card.** `Overlay.moveEvent` calls
+  `ProcessPanel.follow()`, which re-places it at a stored offset from the
+  card's top-left. Ivan had dragged the card to another monitor and left
+  the panel behind on the first one.
+- **Dragging the panel re-sets that offset.** The panel is frameless, so
+  its own background is the drag handle (`mousePressEvent` ->
+  `startSystemMove`), and `moveEvent` recomputes the offset for any move
+  that was not `follow()`'s own -- which is what the `_following` flag is
+  for. Without it, following would immediately overwrite the offset it
+  had just used.
+- **`follow()` clamps to the screen.** A panel riding a card that moves
+  to a screen edge would otherwise end up unreachable, which is the same
+  trap `_keep_in_view` exists for on the card.
+- **It inherits the card's fill alpha**, so the two read as one surface.
+  `Overlay.apply_theme` pushes that down; the panel does not read the
+  opacity setting on its own timer.
+
+Double-clicking the same word again closes it -- that always worked, and
+Ivan still could not find it, hence the **X button**. Both stay: the
+toggle for whoever knows, the X for whoever does not.
+
 ### Ending processes: what protects Ivan from this
 
 - `breakdown.PROTECTED` is the list of names that are shown but never

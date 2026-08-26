@@ -22,7 +22,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      125 offscreen checks, no window, no pytest
+tests/functional.py      141 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the reverse-engineered ia-usage design spec
 vendor/app_template      bundled copy of the shared Windows template
@@ -119,6 +119,11 @@ under 512 MB is left out, so the list never adds up to the bar: the rest
 is small fry plus, on the GPU, the driver's own allocations. The panel
 is titled with the same word you double-clicked, so the two counters can
 never be confused for one another.
+
+The panel rides with the card: move the card and it comes along, drag the
+panel itself and it keeps the new offset from then on. It takes the
+card's transparency too, so the two read as one surface. Double-click the
+same word again to close it, or use the X.
 
 Pick one or more and **End process** closes them, after a confirmation
 naming what goes. Windows' own processes are listed, because they really

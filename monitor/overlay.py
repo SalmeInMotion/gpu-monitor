@@ -28,6 +28,9 @@ from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect,
                                QToolButton, QToolTip, QVBoxLayout, QWidget)
 
 from . import metrics as M
+from .chrome import (ChromeButton, GLYPH_CLOSE, GLYPH_COMPACT,
+                     GLYPH_EXPAND, GLYPH_PIN, GLYPH_SETTINGS,
+                     GLYPH_TOP, GLYPH_UNPIN, chrome_qss)
 from .meter import (CASCADE_STEP_MS, MeterRow, SectionHeader, flat_gradient,
                     ramp_colors)
 from .processes import ProcessPanel
@@ -58,21 +61,6 @@ SHADOW_BLUR = GUTTER
 SHADOW_OFFSET_Y = 2
 SHADOW_ALPHA = 56
 
-# Segoe MDL2 Assets codepoints. E711/E713 are the two ia-usage itself
-# uses; the pin and collapse pairs are the closest stock equivalents of
-# its emoji pin and its Material Symbols collapse/expand pair.
-GLYPH_CLOSE = ""
-GLYPH_SETTINGS = ""
-GLYPH_PIN = ""
-GLYPH_UNPIN = ""
-GLYPH_COMPACT = ""
-GLYPH_EXPAND = ""
-
-
-# "keep above": an arrow to a top bar (Segoe MDL2 U+E898). Distinct from
-# the pin the Lock button uses, so the two window toggles do not read as
-# the same idea.
-GLYPH_TOP = ""
 
 # Re-asserting topmost each tick is how "always on top" beats *other*
 # topmost windows: Qt's WindowStaysOnTopHint is applied once, so a window
@@ -114,34 +102,6 @@ def _resize(spacer, height):
     """changeSize resets a spacer's size policy to its defaults unless
     both are passed, and QLayout.addSpacing's spacers are Minimum/Fixed."""
     spacer.changeSize(0, height, QSizePolicy.Minimum, QSizePolicy.Fixed)
-
-
-def icon_font_family():
-    """Win11 ships Segoe Fluent Icons and keeps Segoe MDL2 Assets for
-    compatibility; the codepoints used here exist in both."""
-    families = QFontDatabase.families()
-    for name in ("Segoe MDL2 Assets", "Segoe Fluent Icons"):
-        if name in families:
-            return name
-    return "Segoe UI Symbol"
-
-
-class ChromeButton(QToolButton):
-    """26px circle, transparent until hovered — ia-usage's chrome recipe."""
-
-    def __init__(self, glyph, tooltip, parent=None, checkable=False):
-        super().__init__(parent)
-        self.setObjectName("Chrome")
-        self.setProperty("noReveal", True)  # the template's glow is not this look
-        self.setFixedSize(26, 26)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFocusPolicy(Qt.NoFocus)
-        self.setCheckable(checkable)
-        self.setToolTip(tooltip)
-        self.set_glyph(glyph)
-
-    def set_glyph(self, glyph):
-        self.setText(glyph)
 
 
 class Card(QWidget):
@@ -505,13 +465,15 @@ class Overlay(QWidget):
         alpha = max(0, min(255, round(
             int(self.settings.get("opacity", 100)) / 100.0 * 255)))
         self.card.set_fill(t["SURFACE"], alpha)
+        if self._panel is not None:
+            # it paints itself from the same tokens and the same opacity
+            self._panel.apply_theme()
         for header in self._headers.values():
             header.set_ink(t["TEXT"])
         self.setStyleSheet(self._qss(t))
         self._refresh_colors()
 
     def _qss(self, t):
-        icon = icon_font_family()
         return f"""
 QWidget#Card {{ background: transparent; }}
 QLabel {{ background: transparent; font-family: "Segoe UI"; }}
@@ -525,18 +487,8 @@ QWidget#Card[compact="true"] QLabel[role="section"] {{ font-size: 12px; font-wei
 QWidget#Card[compact="true"] QLabel[role="label"]   {{ font-size: 10px; }}
 QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
 
-QToolButton#Chrome {{
-    border: none;
-    border-radius: 13px;
-    background: transparent;
-    color: {t['TEXT_55']};
-    font-family: "{icon}";
-    font-size: 11px;
-}}
-QToolButton#Chrome:hover   {{ background: rgba(128, 128, 128, 20); }}
-QToolButton#Chrome:pressed {{ background: rgba(128, 128, 128, 34); }}
-QToolButton#Chrome:checked {{ color: {t['TEXT']}; }}
-"""
+""" + chrome_qss(t)
+
 
     def _bar_colors(self, metric, fraction):
         """QUOTA metrics keep ia-usage's bands; LOAD metrics take the
@@ -666,6 +618,8 @@ QToolButton#Chrome:checked {{ color: {t['TEXT']}; }}
 
     def moveEvent(self, event):  # noqa: N802 - Qt naming
         super().moveEvent(event)
+        if self._panel is not None and self._panel.isVisible():
+            self._panel.follow(self.frameGeometry())
         # Only a move the *pointer* is making counts. Windows re-homes
         # windows by itself whenever the display layout changes — a monitor
         # sleeping, a game switching resolution, an RDP session, a DPI
@@ -973,7 +927,7 @@ QToolButton#Chrome:checked {{ color: {t['TEXT']}; }}
     def show_breakdown(self, kind):
         """Open (or toggle) the list of what is holding that memory."""
         if self._panel is None:
-            self._panel = ProcessPanel(self.theme, self)
+            self._panel = ProcessPanel(self.theme, self.settings)
             self._panel.refresh_requested.connect(self.breakdown_requested)
         self._panel.open_for(kind, self.frameGeometry())
 
