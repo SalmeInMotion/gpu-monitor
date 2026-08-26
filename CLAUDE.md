@@ -288,17 +288,16 @@ when the template gains something this app needs.
 
 ## Double-clicking a row's name: who is using it, and ending them
 
-The trigger is a **double-click on the row's name** -- VRAM, RAM,
-GPU usage or CPU
-(`Metric.breakdown`, `"gpu"` / `"ram"`; `RowLabel` in
-`monitor\meter.py`), not a click on the bar. Ivan asked for both halves
-of that: a deliberate gesture, on a named counter, so there is no way to
-end up reading the wrong one -- which is also why the panel is titled
-with that same word rather than "Video memory"/"System memory". The
-label carries no layout stretch, so the target is exactly as wide as the
-text looks; `monitor\processes.py` is the panel, `monitor\breakdown.py`
-the data behind it, both grouped per executable, sorted descending, with
-everything under 512 MB left out — Ivan's threshold, and the reason the
+The trigger is a **double-click on the row's name** -- VRAM, RAM, GPU
+usage or CPU (`Metric.breakdown`; `RowLabel` in `monitor\meter.py`), not
+a click on the bar. Ivan asked for both halves of that: a deliberate
+gesture, on a named counter, so there is no way to end up reading the
+wrong one -- which is also why the panel is titled with that same word
+rather than a synonym of it. The label carries no layout stretch, so the
+target is exactly as wide as the text looks; `monitor\processes.py` is
+the panel, `monitor\breakdown.py` the data behind it, both grouped per
+executable, sorted descending, with everything under the kind's
+threshold left out -- Ivan's numbers, 512 MB and 5%, and the reason the
 panel's total never matches the bar.
 
 Four things here are load-bearing, and three of them cost a measurement

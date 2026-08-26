@@ -112,14 +112,14 @@ is what ia-usage itself does the moment you pick a custom accent.
 
 ## Double-click a row's name
 
-**Double-clicking the name** of `VRAM`, `RAM`, `GPU usage` or `CPU` opens
-a list of what is using it, biggest first, grouped per executable — one browser
-is fifty processes, and fifty identical rows answer nothing. Anything
-under the threshold is left out -- 512 MB on the two memory rows, 5% on
-the two usage ones -- so the list never adds up to the bar: the rest is
-small fry plus, on VRAM, the driver's own allocations. The panel
-is titled with the same word you double-clicked, so the two counters can
-never be confused for one another.
+**Double-clicking the name** of `VRAM`, `RAM`, `GPU usage` or `CPU`
+opens a list of what is using it, biggest first, grouped per executable
+— one browser is fifty processes, and fifty identical rows answer
+nothing. Anything under the threshold is left out -- 512 MB on the two
+memory rows, 5% on the two usage ones -- so the list never adds up to
+the bar: the rest is small fry plus, on VRAM, the driver's own
+allocations. The panel is titled with the exact name you double-clicked,
+so no two of them can be mistaken for each other.
 
 The panel rides with the card: move the card and it comes along, drag the
 panel itself and it keeps the new offset from then on. It takes the
