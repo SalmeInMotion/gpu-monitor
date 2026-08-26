@@ -286,9 +286,10 @@ shared one deliberately wins wherever it exists, so a fix to the template
 reaches this app without re-vendoring; refresh the copy (and commit it)
 when the template gains something this app needs.
 
-## Double-clicking VRAM or RAM: who is holding it, and ending them
+## Double-clicking a row's name: who is using it, and ending them
 
-The trigger is a **double-click on the word** "VRAM" or "RAM"
+The trigger is a **double-click on the row's name** -- VRAM, RAM,
+GPU usage or CPU
 (`Metric.breakdown`, `"gpu"` / `"ram"`; `RowLabel` in
 `monitor\meter.py`), not a click on the bar. Ivan asked for both halves
 of that: a deliberate gesture, on a named counter, so there is no way to
@@ -328,6 +329,43 @@ to find:
   hands the drag back through `drag_requested` -> `Overlay.begin_drag()`
   if the pointer travels more than `DRAG_SLOP`, and otherwise does
   nothing until `mouseDoubleClickEvent`.
+
+### The usage kinds: GPU and CPU, in percent
+
+Same panel, same gesture, threshold 5% instead of 512 MB (Ivan's numbers
+both times). `Metric.breakdown` is a plain bool now and **the kind is the
+metric's own key** — `vram`, `ram`, `gpu`, `cpu` — so there is one
+vocabulary, the panel titles itself from `Metric.label`, and adding a
+fifth breakdown means setting one flag.
+
+`Entry.value` is bytes for the memory kinds and a percentage for the
+usage ones; `breakdown.fmt_value(kind, v)` and `fmt_threshold(kind)` are
+what know which. Do not reintroduce `Entry.bytes`.
+
+- **CPU comes from the same NT call as memory.** `winproc.snapshot()`
+  returns `KernelTime + UserTime` per process alongside the working set,
+  and a percentage is the difference between two snapshots over the wall
+  time between them, **divided by the core count** — so the rows are on
+  the card's own 0-100 scale and roughly add up to its CPU meter. Per
+  *core* instead, one busy thread would read 100% on a 32-thread box.
+- **The first CPU request pays 300ms.** A running total needs a baseline;
+  `SamplerWorker._cpu_breakdown` sleeps once on the sampler thread when
+  it has none (or one older than 10s), then keeps the reading so every
+  later refresh differences over the panel's own 2s cadence. That sleep
+  delays a card tick and nothing the user is looking at.
+- **GPU per process is aggregated like the adapter figure**: within one
+  process, sum its instances per engine type and take the busiest type.
+  Summing across types would let a process doing 90% 3D and 40% copy
+  report 130%.
+- The panel's total is always **less than the bar**, and that is correct:
+  everything under the threshold is missing from it, plus, on VRAM, the
+  driver's own allocations. Measured live: card 41% CPU, panel 30%.
+
+**The test suite reads the physical mouse.** `Overlay._pointer_held()`
+calls `GetAsyncKeyState`, so any test that moves the card must pin it
+(`ov._pointer_held = lambda: False`) or a click of Ivan's mid-run arms
+the position-save timer and fails a later check. That is exactly how the
+satellite block made "an unprompted move does not arm the save" flaky.
 
 ### The panel is a satellite, not a window of its own
 

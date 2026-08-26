@@ -202,14 +202,14 @@ rows = bd._collect(fake, fake_names)
 check("processes of one exe are grouped",
       [e.name for e in rows] == ["big", "csrss"], str([e.name for e in rows]))
 check("the group sums every instance, small ones included",
-      rows[0].bytes == 1700 * MB, str(rows[0].bytes // MB))
+      rows[0].value == 1700 * MB, str(rows[0].value // MB))
 check("it carries every pid it summed", sorted(rows[0].pids) == [10, 11, 12],
       str(rows[0].pids))
 check("under 512 MB never reaches the list",
-      all(e.bytes >= bd.HIDE_BELOW for e in rows) and "tiny" not in
+      all(e.value >= bd.HIDE_BELOW_BYTES for e in rows) and "tiny" not in
       [e.name for e in rows])
-check("biggest first", [e.bytes for e in rows] == sorted(
-      [e.bytes for e in rows], reverse=True))
+check("biggest first", [e.value for e in rows] == sorted(
+      [e.value for e in rows], reverse=True))
 
 # Regression: a stray comment once swallowed half this set, and the only
 # symptom was that csrss quietly became selectable.
@@ -223,6 +223,51 @@ import os as _os
 check("terminate refuses our own process",
       bd.terminate([_os.getpid()]) == (0, 0, 1))
 
+print("\n-- usage breakdowns: percentages, 5% threshold --")
+usage = {20: 40.0, 21: 12.0, 22: 3.0, 23: 6.0}
+usage_names = {20: "houdinifx.exe", 21: "houdinifx.exe",
+               22: "idle.exe", 23: "dwm.exe"}
+urows = bd._collect(usage, usage_names, bd.HIDE_BELOW_PERCENT)
+check("percentages group and sum like bytes do",
+      urows[0].name == "houdinifx" and urows[0].value == 52.0,
+      str([(e.name, e.value) for e in urows]))
+check("under 5% is dropped", "idle" not in [e.name for e in urows])
+check("6% is kept", "dwm" in [e.name for e in urows])
+check("a percentage formats as one", bd.fmt_value(bd.KIND_CPU, 52.0) == "52%",
+      bd.fmt_value(bd.KIND_CPU, 52.0))
+check("a small one keeps a decimal", bd.fmt_value(bd.KIND_GPU, 6.4) == "6.4%",
+      bd.fmt_value(bd.KIND_GPU, 6.4))
+check("bytes still format as bytes",
+      bd.fmt_value(bd.KIND_VRAM, 2 * 1024 ** 3) == "2.0 GB",
+      bd.fmt_value(bd.KIND_VRAM, 2 * 1024 ** 3))
+check("each kind states its own threshold",
+      (bd.fmt_threshold(bd.KIND_RAM), bd.fmt_threshold(bd.KIND_CPU))
+      == ("512 MB", "5%"),
+      str((bd.fmt_threshold(bd.KIND_RAM), bd.fmt_threshold(bd.KIND_CPU))))
+
+# CPU time is a running total: the percentage is the difference between
+# two readings over the wall time between them, divided by the cores.
+import os as _os
+cores = _os.cpu_count() or 1
+# Scaled to the machine running the test, so it always exercises the
+# real path: a fixed delta reads 3% on 32 threads and 25% on 4, and the
+# 5% floor would swallow it on one of them.
+window = 2.0
+busy = int(0.25 * window * cores * 1e7)      # a quarter of the machine
+before = (100.0, {30: 0, 31: 0}, {})
+after = (100.0 + window, {30: busy, 31: 0},
+         {30: "busy.exe", 31: "lazy.exe"})
+cpu_rows = bd.cpu_entries(before, after)
+check("cpu% is of the whole machine, not of one core",
+      len(cpu_rows) == 1 and abs(cpu_rows[0].value - 25.0) < 0.01,
+      f"{cpu_rows[0].value:.2f}% of {cores} threads" if cpu_rows else "no rows")
+check("a process that used no time is not listed",
+      "lazy" not in [e.name for e in cpu_rows])
+check("no baseline means no invented percentages",
+      bd.cpu_entries(None, after) == [])
+check("two readings at the same instant are refused",
+      bd.cpu_entries((100.0, {}, {}), (100.0, {}, {})) == [])
+
 print("\n-- the process panel --")
 panel = ProcessPanel(ctx.theme, ctx.settings)
 panel.open_for(bd.KIND_RAM, QRect(200, 200, 312, 494))
@@ -232,8 +277,8 @@ settle()
 check("panel lists what it was given", panel.list.topLevelItemCount() == 2)
 check("panel titles itself with the row's own word",
       panel.title.text() == "RAM", panel.title.text())
-check("panel totals what it lists", panel.total.text() == bd.fmt_bytes(
-      sum(e.bytes for e in rows)), panel.total.text())
+check("panel totals what it lists", panel.total.text() == bd.fmt_value(bd.KIND_RAM,
+      sum(e.value for e in rows)), panel.total.text())
 check("End is disabled with nothing chosen", not panel.btn_end.isEnabled())
 
 panel.list.topLevelItem(1).setSelected(True)      # csrss, protected
@@ -260,6 +305,10 @@ print("\n-- the panel is a satellite of the card --")
 # Near the top-left, and small steps: follow() clamps to the screen so a
 # followed panel can never end up unreachable, and the offscreen screen
 # here is only 800x800 -- a big jump would hit that clamp, not a bug.
+# _pointer_held() reads the *physical* mouse button, so a click of Ivan's
+# while this runs would arm the position save and leave the timer active
+# for the drag test further down. Pinned false for the moves below.
+ov._pointer_held = lambda: False
 ov.move(20, 20)
 ov.show_breakdown(bd.KIND_RAM)
 settle()
@@ -300,6 +349,8 @@ check("and opens it again", sat.isVisible())
 sat.btn_close.click()
 settle()
 check("the close button closes it", not sat.isVisible())
+del ov._pointer_held
+ov._save_timer.stop()
 
 
 print("\n-- opening it: double-click, on the word, not the bar --")
@@ -308,9 +359,10 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 vram_label = ov._rows["vram"].label
-gpu_label = ov._rows["gpu"].label
-check("the memory rows' words are interactive", vram_label._interactive)
-check("a load metric's word is not", not gpu_label._interactive)
+check("all four measurable rows are interactive",
+      all(ov._rows[k].label._interactive for k in ("vram", "ram", "gpu", "cpu")))
+check("a row with no breakdown is not",
+      not ov._rows["temp"].label._interactive)
 check("the bar itself is no longer a target",
       not hasattr(ov._rows["vram"].meter, "_interactive"))
 check("the word is only as wide as the word",

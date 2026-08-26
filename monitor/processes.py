@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from . import breakdown as bd
+from . import metrics as M
 from .chrome import ChromeButton, GLYPH_CLOSE, chrome_qss
 
 log = logging.getLogger("gpu_monitor.processes")
@@ -37,10 +38,10 @@ ROW_HEIGHT = 22         # kept in step with the QSS below
 
 REFRESH_MS = 2000       # slower than the card: this walks the process table
 
-# The same words the rows carry. "Video memory"/"System memory"
-# read as near-synonyms at a glance, which is exactly the mix-up
-# this panel must not invite.
-TITLES = {bd.KIND_GPU: "VRAM", bd.KIND_RAM: "RAM"}
+# Straight from the metric table, so the panel is always titled with the
+# exact word that was double-clicked. "Video memory"/"System memory" read
+# as near-synonyms at a glance, which is the mix-up this must not invite.
+TITLES = {m.key: m.label for m in M.METRICS if m.breakdown}
 
 
 class ProcessPanel(QWidget):
@@ -140,7 +141,7 @@ class ProcessPanel(QWidget):
             self.close()
             return
         self.kind = kind
-        self.title.setText(TITLES.get(kind, "Memory"))
+        self.title.setText(TITLES.get(kind, kind.upper()))
         self.total.setText("")
         self.list.clear()
         self._set_hint("Reading...")
@@ -232,7 +233,8 @@ class ProcessPanel(QWidget):
         self._entries = entries
         self.list.clear()
         for entry in entries:
-            item = QTreeWidgetItem([entry.name, bd.fmt_bytes(entry.bytes)])
+            item = QTreeWidgetItem(
+                [entry.name, bd.fmt_value(kind, entry.value)])
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
             if len(entry.pids) > 1:
                 item.setToolTip(0, f"{len(entry.pids)} processes")
@@ -252,12 +254,13 @@ class ProcessPanel(QWidget):
             if entry.name in keep and not entry.protected:
                 item.setSelected(True)
 
-        total = sum(e.bytes for e in entries)
-        self.total.setText(bd.fmt_bytes(total) if entries else "")
+        total = sum(e.value for e in entries)
+        self.total.setText(bd.fmt_value(kind, total) if entries else "")
+        limit = bd.fmt_threshold(kind)
         if entries:
-            self._set_hint("Nothing under 512 MB is listed.")
+            self._set_hint(f"Nothing under {limit} is listed.")
         else:
-            self._set_hint("Nothing is using more than 512 MB.")
+            self._set_hint(f"Nothing is using more than {limit}.")
         self._resize_list()
         self._sync_button()
 
@@ -316,7 +319,7 @@ class ProcessPanel(QWidget):
             return
         pids = [pid for entry in chosen for pid in entry.pids]
         lines = "\n".join(
-            f"  {e.name} - {bd.fmt_bytes(e.bytes)}"
+            f"  {e.name} - {bd.fmt_value(self.kind, e.value)}"
             + (f" ({len(e.pids)} processes)" if len(e.pids) > 1 else "")
             for e in chosen)
         # Deliberately a confirmation, where Task Manager has none: this

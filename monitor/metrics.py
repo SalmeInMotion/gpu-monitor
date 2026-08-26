@@ -73,7 +73,7 @@ class Metric:
     """
 
     def __init__(self, key, label, group, fraction, value, caption=None,
-                 default=True, needs=(), ramp=RAMP_LOAD, breakdown=None):
+                 default=True, needs=(), ramp=RAMP_LOAD, breakdown=False):
         self.key = key
         self.label = label
         self.group = group
@@ -82,8 +82,9 @@ class Metric:
         self._caption = caption
         self.default = default
         self.ramp = ramp
-        # "gpu" / "ram" for the two meters whose bar can be clicked to see
-        # which processes are holding that memory; None for the rest.
+        # Whether double-clicking this row's name opens a per-process
+        # breakdown. The kind is the metric's own key, so there is no
+        # second vocabulary to keep in step.
         self.breakdown = breakdown
         # sample keys that must be non-None for this row to have data
         self.needs = tuple(needs)
@@ -122,7 +123,7 @@ METRICS = (
                            f"{_fmt_gb(s['mem_total'])} GB"),
         needs=("mem_used", "mem_total"),
         ramp=RAMP_QUOTA,
-        breakdown="gpu",
+        breakdown=True,
     ),
     Metric(
         "gpu", "GPU usage", GROUP_GPU,
@@ -130,6 +131,7 @@ METRICS = (
         value=lambda s: f"{s['util']:.0f}%",
         caption=lambda s: (f"{s['clock']:.0f} MHz" if s.get("clock") else ""),
         needs=("util",),
+        breakdown=True,
     ),
     Metric(
         "temp", "Temperature", GROUP_GPU,
@@ -169,6 +171,7 @@ METRICS = (
         caption=lambda s: (f"{s['cpu_freq'] / 1000:.1f} GHz"
                            if s.get("cpu_freq") else ""),
         needs=("cpu",),
+        breakdown=True,
     ),
     Metric(
         "ram", "RAM", GROUP_SYSTEM,
@@ -178,7 +181,7 @@ METRICS = (
                            f"{_fmt_gb(s['ram_total'])} GB"),
         needs=("ram_used", "ram_total"),
         ramp=RAMP_QUOTA,
-        breakdown="ram",
+        breakdown=True,
     ),
 )
 

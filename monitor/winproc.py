@@ -75,11 +75,16 @@ except (OSError, AttributeError):  # pragma: no cover - not Windows
     _ntdll = None
 
 
-def working_sets():
-    """[(pid, name, working_set_bytes), ...] or None if the call failed.
+def snapshot():
+    """[(pid, name, working_set_bytes, cpu_100ns), ...] or None.
+
+    One call answers both questions the breakdown panels ask. CPU time is
+    kernel + user in 100-nanosecond units, which is a running total: a
+    percentage is the difference between two of these over the wall time
+    between them, which is exactly what Task Manager does.
 
     The System Idle Process (pid 0) is dropped: its "working set" is an
-    artefact and it is not something anyone is going to close.
+    artefact and its CPU time is the definition of doing nothing.
     """
     if _ntdll is None:
         return None
@@ -115,7 +120,8 @@ def working_sets():
                         entry.ImageName.Buffer, entry.ImageName.Length // 2)
                 except (OSError, ValueError):
                     name = "?"
-            out.append((int(pid), name, int(entry.WorkingSetSize)))
+            out.append((int(pid), name, int(entry.WorkingSetSize),
+                        int(entry.KernelTime) + int(entry.UserTime)))
         if not entry.NextEntryOffset:
             break
         offset += entry.NextEntryOffset
@@ -123,3 +129,12 @@ def working_sets():
             log.debug("process table chain ran past the buffer")
             return None
     return out or None
+
+
+def working_sets():
+    """[(pid, name, working_set_bytes), ...] -- snapshot() without the
+    CPU column, for callers that only want memory."""
+    rows = snapshot()
+    if rows is None:
+        return None
+    return [(pid, name, ws) for pid, name, ws, _ in rows]

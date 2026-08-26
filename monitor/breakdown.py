@@ -1,14 +1,17 @@
-"""Who is holding the memory: per-process breakdowns for the two bars.
+"""Who is using it: the per-process breakdown behind each meter.
 
-Clicking the VRAM or RAM meter asks for one of these. Entries are grouped
-by executable, because one browser is fifty processes and a list of fifty
-"msedge.exe" rows answers nothing, and anything under HIDE_BELOW is left
-out: the question is "what do I close", and a 40 MB process is never the
-answer.
+Double-clicking VRAM, RAM, GPU usage or CPU asks for one of these. The
+kind is the metric's own key, so there is one vocabulary and no mapping
+to keep in step.
 
-No Qt in here on purpose — this runs on the sampler thread, and walking a
-few hundred processes takes long enough (50-150 ms) to stutter the card
-if it ran on the UI one.
+Entries are grouped by executable, because one browser is fifty processes
+and a list of fifty "msedge.exe" rows answers nothing, and anything under
+the kind's threshold is left out: the question is "what do I close", and
+a 40 MB or 0.2% process is never the answer. Ivan set both thresholds —
+512 MB for the memory meters, 5% for the usage ones.
+
+No Qt in here on purpose — this runs on the sampler thread, where a walk
+of the process table cannot stutter the card.
 """
 
 from __future__ import annotations
@@ -24,19 +27,26 @@ try:
 except ImportError:  # pragma: no cover - depends on the machine
     psutil = None
 
-from .winproc import working_sets
+from .winproc import snapshot, working_sets
 
-KIND_GPU = "gpu"
+# The metric keys from metrics.py; `Metric.breakdown` just says whether a
+# row has one, and the kind is the key itself.
+KIND_VRAM = "vram"
 KIND_RAM = "ram"
+KIND_GPU = "gpu"
+KIND_CPU = "cpu"
 
-# Ivan's threshold: below this a process is not what is eating the memory.
-HIDE_BELOW = 512 * 1024 * 1024
+MEMORY_KINDS = frozenset({KIND_VRAM, KIND_RAM})
+USAGE_KINDS = frozenset({KIND_GPU, KIND_CPU})
+
+HIDE_BELOW_BYTES = 512 * 1024 * 1024
+HIDE_BELOW_PERCENT = 5.0
 
 # Killing any of these takes Windows down with it, so they are listed but
 # never selectable. Names are lowercase, without the .exe.
 PROTECTED = frozenset({
     # Windows itself. Ending any of these blue-screens or blanks the
-    # session, so they are listed -- they really are holding memory --
+    # session, so they are listed -- they really are using the machine --
     # but can never be selected.
     "system", "system idle process", "secure system", "registry",
     "memory compression",   # NT's name for it
@@ -47,19 +57,26 @@ PROTECTED = frozenset({
     "audiodg", "wudfhost", "sihost", "ctfmon",
 })
 
-# Instance names look like:
-#   pid_8644_luid_0x00000000_0x00014A29_phys_0
-_PROC_INSTANCE = re.compile(r"pid_(\d+)_luid_(\S+?)_phys")
+# 100-nanosecond units per second, the resolution NT reports CPU time in.
+_TICKS_PER_SECOND = 1e7
+
+
+def threshold_for(kind):
+    return HIDE_BELOW_BYTES if kind in MEMORY_KINDS else HIDE_BELOW_PERCENT
 
 
 class Entry:
-    """One executable, and every process of it that holds memory."""
+    """One executable, and every process of it that counts toward a meter.
 
-    __slots__ = ("name", "bytes", "pids")
+    `value` is bytes for the memory kinds and a percentage for the usage
+    ones; `fmt_value` is what knows which.
+    """
 
-    def __init__(self, name, size, pids):
+    __slots__ = ("name", "value", "pids")
+
+    def __init__(self, name, value, pids):
         self.name = name
-        self.bytes = size
+        self.value = value
         self.pids = list(pids)
 
     @property
@@ -67,7 +84,7 @@ class Entry:
         return self.name.lower() in PROTECTED
 
     def __repr__(self):
-        return f"<Entry {self.name} {self.bytes / 1024 ** 2:.0f}MiB x{len(self.pids)}>"
+        return f"<Entry {self.name} {self.value:.1f} x{len(self.pids)}>"
 
 
 def _tidy(name):
@@ -91,31 +108,31 @@ def name_map():
     return out
 
 
-def _collect(raw, names=None):
-    """{pid: bytes} -> the sorted, filtered, grouped-by-executable list."""
-    if psutil is None:
-        return []
+def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES):
+    """{pid: value} -> the sorted, filtered, grouped-by-executable list."""
     if names is None:
         names = name_map()
     grouped = {}
-    for pid, size in raw.items():
-        if size <= 0:
+    for pid, value in raw.items():
+        if value <= 0:
             continue
         raw_name = names.get(pid)
-        # Exited between the counter read and now, or not ours to look at.
-        # Its memory is still real, so it goes in one bucket rather than
-        # being dropped from a total the bar is showing.
+        # Exited between the reading and now, or not ours to look at. It
+        # is still real usage, so it goes in one bucket rather than being
+        # dropped from a total the bar is showing.
         name = _tidy(raw_name) if raw_name else "(other)"
         slot = grouped.get(name)
         if slot is None:
-            grouped[name] = Entry(name, size, [pid])
+            grouped[name] = Entry(name, value, [pid])
         else:
-            slot.bytes += size
+            slot.value += value
             slot.pids.append(pid)
-    entries = [e for e in grouped.values() if e.bytes >= HIDE_BELOW]
-    entries.sort(key=lambda e: e.bytes, reverse=True)
+    entries = [e for e in grouped.values() if e.value >= threshold]
+    entries.sort(key=lambda e: e.value, reverse=True)
     return entries
 
+
+# --- memory ----------------------------------------------------------------
 
 def ram_entries():
     """System memory per executable.
@@ -124,13 +141,13 @@ def ram_entries():
     Summing it across the processes of one app slightly over-counts pages
     they share, and that is the right error to make here: the alternative
     (USS) means opening every process one by one and costs an order of
-    magnitude more time for a number that moves the ranking barely at all.
+    magnitude more time for a number that barely moves the ranking.
     """
     rows = working_sets()
     if rows is not None:
         raw = {pid: ws for pid, _, ws in rows}
         names = {pid: name for pid, name, _ in rows}
-        return _collect(raw, names)
+        return _collect(raw, names, HIDE_BELOW_BYTES)
 
     # Fallback for a Windows that no longer answers the NT call the same
     # way. Correct, just ~90x slower (1574 ms against 17 on this machine),
@@ -149,10 +166,10 @@ def ram_entries():
             names[pid] = proc.info["name"] or "?"
         except Exception:
             continue
-    return _collect(raw, names)
+    return _collect(raw, names, HIDE_BELOW_BYTES)
 
 
-def gpu_entries(pdh):
+def vram_entries(pdh):
     """Video memory per executable, from the counter that adds up.
 
     `Dedicated Usage` is the obvious choice and it is wrong: it counts
@@ -164,12 +181,90 @@ def gpu_entries(pdh):
     """
     if pdh is None or not pdh.ok:
         return []
-    return _collect(pdh.per_process())
+    return _collect(pdh.per_process(), None, HIDE_BELOW_BYTES)
 
 
-def entries_for(kind, pdh=None):
-    return gpu_entries(pdh) if kind == KIND_GPU else ram_entries()
+# --- usage ------------------------------------------------------------------
 
+def gpu_entries(pdh):
+    """GPU utilisation per executable, on the card's own scale.
+
+    Aggregated exactly as the whole-adapter figure is: within one process,
+    sum its instances per engine type and take the busiest type. Adding
+    the types together would let one process report 130%.
+    """
+    if pdh is None or not pdh.ok:
+        return []
+    return _collect(pdh.per_process_util(), None, HIDE_BELOW_PERCENT)
+
+
+def cpu_sample():
+    """(monotonic seconds, {pid: cpu_100ns}, {pid: name}) or None.
+
+    CPU time is a running total, so a percentage needs two of these.
+    """
+    rows = snapshot()
+    if rows is None:
+        return None
+    import time
+    return (time.monotonic(),
+            {pid: cpu for pid, _, _, cpu in rows},
+            {pid: name for pid, name, _, _ in rows})
+
+
+def cpu_entries(before, after):
+    """Percentage of the whole machine, per executable, between two
+    cpu_sample() readings.
+
+    Divided by the core count, so the rows are on the same scale as the
+    card's own CPU meter and add up to roughly it — not to per-core
+    percentages, where one busy thread would read 100 on a 32-thread box.
+    """
+    if not before or not after:
+        return []
+    elapsed = after[0] - before[0]
+    if elapsed <= 0:
+        return []
+    cores = os.cpu_count() or 1
+    span = elapsed * cores * _TICKS_PER_SECOND
+    previous = before[1]
+    raw = {}
+    for pid, ticks in after[1].items():
+        was = previous.get(pid)
+        if was is None:
+            continue        # started since the last reading; no baseline yet
+        used = ticks - was
+        if used > 0:
+            raw[pid] = used / span * 100.0
+    return _collect(raw, after[2], HIDE_BELOW_PERCENT)
+
+
+# --- formatting -------------------------------------------------------------
+
+def fmt_bytes(size):
+    """The card's own idiom: a decimal below 10, none above."""
+    gb = size / (1024.0 ** 3)
+    if gb >= 10:
+        return f"{gb:.0f} GB"
+    if gb >= 1:
+        return f"{gb:.1f} GB"
+    return f"{size / (1024.0 ** 2):.0f} MB"
+
+
+def fmt_value(kind, value):
+    if kind in MEMORY_KINDS:
+        return fmt_bytes(value)
+    return f"{value:.0f}%" if value >= 10 else f"{value:.1f}%"
+
+
+def fmt_threshold(kind):
+    """How the panel words what it is leaving out."""
+    if kind in MEMORY_KINDS:
+        return fmt_bytes(HIDE_BELOW_BYTES)
+    return f"{HIDE_BELOW_PERCENT:.0f}%"
+
+
+# --- ending things ----------------------------------------------------------
 
 def terminate(pids):
     """Kill these processes. Returns (ended, failed, skipped).
@@ -213,13 +308,3 @@ def terminate(pids):
             log.info("could not end pid %s: %s", pid, exc)
             failed += 1
     return ended, failed, skipped
-
-
-def fmt_bytes(size):
-    """The card's own idiom: a decimal below 10, none above."""
-    gb = size / (1024.0 ** 3)
-    if gb >= 10:
-        return f"{gb:.0f} GB"
-    if gb >= 1:
-        return f"{gb:.1f} GB"
-    return f"{size / (1024.0 ** 2):.0f} MB"

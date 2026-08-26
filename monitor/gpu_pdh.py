@@ -50,6 +50,9 @@ COUNTER_PROCESS_LOCAL = r"\GPU Process Memory(*)\Local Usage"
 
 # "pid_8644_luid_0x00000000_0x00014A29_phys_0"
 _INSTANCE = re.compile(r"(?:pid_(\d+)_)?luid_(\S+?)_phys")
+# ..._phys_0_eng_0_engtype_3d -- the engine counter carries a type too
+_ENGINE_INSTANCE = re.compile(
+    r"pid_(\d+)_luid_(\S+?)_phys_\d+_eng_\d+_engtype_(\w+)")
 
 # "pid_1956_luid_0x00000000_0x0000e9bf_phys_0_eng_0_engtype_3d"
 _ENGTYPE = re.compile(r"engtype_(\w+)$")
@@ -336,6 +339,32 @@ class PdhGpu:
             return
         found = _INSTANCE.search(max(memory, key=memory.get))
         self._luid = found.group(2) if found else None
+
+    def per_process_util(self):
+        """{pid: percent} of GPU utilisation, on the adapter the bar shows.
+
+        Aggregated per process the same way the whole-adapter figure is:
+        sum that process's instances within an engine type, then take the
+        busiest type. Summing across types instead would let a process
+        doing 90% 3D and 40% copy report 130%.
+        """
+        if not self.ok or self._query is None:
+            return {}
+        self._query.collect()
+        if self._luid is None:
+            self._resolve_luid()
+        by_pid = {}
+        for instance, value in self._query.read("engine").items():
+            found = _ENGINE_INSTANCE.match(instance)
+            if not found:
+                continue
+            pid, luid, engtype = found.group(1), found.group(2), found.group(3)
+            if self._luid and luid != self._luid:
+                continue
+            types = by_pid.setdefault(int(pid), {})
+            types[engtype] = types.get(engtype, 0.0) + value
+        return {pid: min(100.0, max(types.values()))
+                for pid, types in by_pid.items() if types}
 
     def per_process(self):
         """{pid: bytes} of video memory, for the adapter the bar shows.

@@ -188,6 +188,10 @@ class SamplerWorker(QObject):
         # the fallback on an AMD or Intel GPU, where they are all there is.
         self._use_nvidia = True
         self._pdh = None
+        # CPU time is a running total, so a percentage needs two readings.
+        # Kept between requests, so the second and later refreshes are a
+        # straight difference over the panel's own 2s cadence.
+        self._cpu_prev = None
 
     def start(self):
         if HAS_PSUTIL:
@@ -209,14 +213,40 @@ class SamplerWorker(QObject):
     def compute_breakdown(self, kind):
         """Answer one request for "who is holding this memory"."""
         try:
-            if kind == bd.KIND_GPU:
+            if kind == bd.KIND_VRAM:
+                entries = bd.vram_entries(self._ensure_pdh())
+            elif kind == bd.KIND_GPU:
                 entries = bd.gpu_entries(self._ensure_pdh())
+            elif kind == bd.KIND_CPU:
+                entries = self._cpu_breakdown()
             else:
                 entries = bd.ram_entries()
         except Exception as exc:            # never take the thread down
             log.warning("breakdown(%s) failed: %s", kind, exc)
             entries = []
         self.breakdown.emit(kind, entries)
+
+    def _cpu_breakdown(self):
+        """Two readings of the process table, differenced.
+
+        With no usable baseline the first request pays for one here: a
+        300ms wait on *this* thread, which delays a card tick and nothing
+        the user is looking at. Every later refresh differences against
+        the previous request instead, over the panel's own 2s cadence.
+        """
+        now = bd.cpu_sample()
+        if now is None:
+            return []
+        previous = self._cpu_prev
+        if previous is None or (now[0] - previous[0]) > 10.0:
+            import time
+            previous = now
+            time.sleep(0.30)
+            now = bd.cpu_sample()
+            if now is None:
+                return []
+        self._cpu_prev = now
+        return bd.cpu_entries(previous, now)
 
     def _ensure_pdh(self):
         """The counters, opened on demand.

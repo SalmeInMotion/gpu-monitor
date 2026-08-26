@@ -268,7 +268,7 @@ class Overlay(QWidget):
                     row.label.set_interactive(
                         True, f"Double-click: what is using {metric.label}")
                     row.label.activated.connect(
-                        lambda k=metric.breakdown: self.show_breakdown(k))
+                        lambda k=metric.key: self.show_breakdown(k))
                     # The word swallowed the press to tell a click from a
                     # drag; if it turned out to be a drag, it hands the
                     # card's own move back to us.
