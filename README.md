@@ -121,10 +121,10 @@ the GPU, the driver's own allocations.
 Pick one or more and **End process** closes them, after a confirmation
 naming what goes. Windows' own processes are listed, because they really
 are using the memory, but greyed and impossible to select: ending
- or  takes the session with it.
+`csrss` or `dwm` takes the session with it.
 
-Video memory per process comes from  —
-not , which counts committed address space and reported
+Video memory per process comes from `GPU Process Memory\Local Usage` --
+not `Dedicated Usage`, which counts committed address space and reported
 46 GB against an adapter really holding 5.6.
 
 ## How it is built
