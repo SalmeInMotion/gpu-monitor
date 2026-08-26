@@ -382,9 +382,29 @@ time.
   A panel emits `closed(kind)` from its own `closeEvent` so the overlay
   can forget it; nothing else removes entries, so closing by X, by
   gesture or by the card shutting down all take the same path.
+- **The stack is re-laid, not placed once.** `Overlay._reflow_stack()`
+  runs on every panel `resized`, on open, on close and on a card move.
+  Placing each panel once at open time is what gave Ivan three different
+  gaps: a panel is short while it says "Reading..." and grows when its
+  rows land, so whatever was under it kept the spacing of a size that no
+  longer existed. Closing one also closes the hole it left.
+- **STACK_GAP is measured between what you can see.** Each window carries
+  `GUTTER` of transparent shadow room on every side, so two windows have
+  to *overlap* by `2*GUTTER - STACK_GAP` for the painted cards to sit
+  `STACK_GAP` apart. And `QRect.bottom()` is the last pixel inside the
+  rect, not the edge after it -- forgetting the `+ 1` puts the cards one
+  pixel closer than the constant says. Any test here must measure the
+  card rects (`frameGeometry().adjusted(GUTTER, GUTTER, -GUTTER,
+  -GUTTER)`), never the window rects, which overlap by design.
+- **Leaving the stack is a press, not a move.** `mousePressEvent` sets
+  `stacked = False`, because that is the only gesture that can move a
+  panel by hand. Inferring it from `moveEvent` instead looked right and
+  was not: `show()` emits a moveEvent too, so every panel fell out of the
+  stack the instant it opened, and they all piled up at the same spot.
 - **Stacking wraps to a new column** when nothing fits below
   (`_place(..., below=...)`). Clamping instead would drop the new panel
-  on top of the one above and hide both.
+  on top of the one above and hide both. A test comparing gaps must skip
+  the pair that straddles the wrap.
 - **A panel clamped against a screen edge stops following the card**
   that way. That is the intended trade: staying on screen beats tracking.
   A test that moves the card must therefore use a stack that fits, or it

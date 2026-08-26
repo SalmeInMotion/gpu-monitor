@@ -190,7 +190,7 @@ ov.on_sample(SAMPLE)
 settle()
 
 print("\n-- memory breakdown: grouping, threshold, order --")
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QPoint, QPointF, QRect
 from monitor import breakdown as bd
 from monitor.processes import ProcessPanel
 
@@ -319,12 +319,24 @@ ov.show_breakdown(bd.KIND_RAM, additive=True)
 settle()
 check("Shift adds to what is open",
       set(ov._panels) == {bd.KIND_CPU, bd.KIND_RAM}, str(set(ov._panels)))
+from monitor.processes import GUTTER as _GUT, STACK_GAP as _GAP
+
+
+def card_rect(panel):
+    """What you actually see: the window minus its transparent shadow
+    room. Window rects overlap by design; painted cards must not."""
+    return panel.frameGeometry().adjusted(_GUT, _GUT, -_GUT, -_GUT)
+
+
 first, second = ov._panels[bd.KIND_CPU], ov._panels[bd.KIND_RAM]
 check("the new one lands under the other",
-      second.y() >= first.frameGeometry().bottom(),
-      f"new top {second.y()} vs lower edge {first.frameGeometry().bottom()}")
+      card_rect(second).top() > card_rect(first).bottom(),
+      f"{card_rect(second).top()} vs {card_rect(first).bottom()}")
 check("and in the same column", second.x() == first.x(),
       f"{second.x()} vs {first.x()}")
+check("with exactly the gap the constant says",
+      card_rect(second).top() - card_rect(first).bottom() - 1 == _GAP,
+      f"{card_rect(second).top() - card_rect(first).bottom() - 1} vs {_GAP}")
 
 # Tracking is checked on a stack that fits: a panel clamped against a
 # screen edge cannot follow the card further that way, and staying on
@@ -341,19 +353,45 @@ settle()
 check("Shift again makes three", len(ov._panels) == 3, str(set(ov._panels)))
 third = ov._panels[bd.KIND_GPU]
 # On this 800x800 offscreen screen a third panel cannot fit under the
-# second, so it wraps to a new column. Either way it must not land on
-# top of the one before it.
+# second, so it wraps to a new column. Either way its painted card must
+# not land on top of the one before it.
 check("a third panel never overlaps the second",
-      not third.frameGeometry().intersects(second.frameGeometry()),
-      f"{third.frameGeometry()} vs {second.frameGeometry()}")
-from monitor.processes import STACK_GAP as _GAP
-from PySide6.QtGui import QGuiApplication as _GA
-_area = _GA.primaryScreen().availableGeometry()
-check("...and it only left the column because nothing fit below",
-      second.frameGeometry().bottom() + _GAP + third.height() > _area.bottom(),
-      f"below would end at "
-      f"{second.frameGeometry().bottom() + _GAP + third.height()}, "
-      f"screen ends at {_area.bottom()}")
+      not card_rect(third).intersects(card_rect(second)),
+      f"{card_rect(third)} vs {card_rect(second)}")
+
+print("\n-- the stack re-flows as panels grow --")
+# The bug Ivan reported: each panel is placed while it still says
+# "Reading...", then grows when its rows land, so positions computed once
+# leave gaps of three different sizes.
+def column_gaps(panels):
+    """Gaps between consecutive panels *in the same column*. A stack that
+    wraps has no meaningful gap across the break."""
+    out = []
+    for above, under in zip(panels, panels[1:]):
+        if card_rect(under).left() == card_rect(above).left():
+            out.append(card_rect(under).top() - card_rect(above).bottom() - 1)
+    return out
+
+
+stacked = ov._stacked_panels()
+gaps = column_gaps(stacked)
+check("every visible gap is the same", len(set(gaps)) <= 1, str(gaps))
+check("and it is the one the constant names",
+      gaps and all(g == _GAP for g in gaps), f"{gaps} vs {_GAP}")
+
+# growing the top panel must push the ones under it, not overlap them
+before_tops = [p.y() for p in ov._stacked_panels()[1:]]
+stacked[0].setFixedHeight(stacked[0].height() + 60)
+settle()
+after = ov._stacked_panels()
+regaps = column_gaps(after)
+check("a panel growing re-lays the ones below it",
+      bool(regaps) and all(g == _GAP for g in regaps), str(regaps))
+check("which actually moved them",
+      [p.y() for p in after[1:]] != before_tops or not before_tops,
+      f"{[p.y() for p in after[1:]]} vs {before_tops}")
+stacked[0].setMinimumHeight(0)
+stacked[0].setMaximumHeight(16777215)
 
 ov.show_breakdown(bd.KIND_RAM, additive=True)
 settle()
@@ -395,7 +433,16 @@ check("moving the card takes it along",
       sat.pos() == first + QPoint(40, 30),
       f"{sat.pos()} vs {first + QPoint(40, 30)}")
 
-# dragging the panel itself re-sets where it rides from then on
+# dragging the panel itself takes it out of the stack and re-sets where
+# it rides from then on. The press is what marks it: a bare move() is
+# also what the stack itself does, and must not read as a hand-drag.
+from PySide6.QtGui import QMouseEvent as _QME
+from PySide6.QtWidgets import QApplication as _QApp
+_c = QPointF(sat.width() / 2, 8)
+_QApp.sendEvent(sat, _QME(_QME.Type.MouseButtonPress, _c,
+                          QPointF(sat.mapToGlobal(_c.toPoint())),
+                          Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+check("a press on the panel takes it out of the stack", not sat.stacked)
 sat.move(sat.x() - 60, sat.y() + 20)
 settle()
 moved = sat.pos()

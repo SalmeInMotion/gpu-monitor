@@ -159,6 +159,7 @@ class Overlay(QWidget):
         self._gpu_name = None
         self._shown_groups = []
         self._panels = {}
+        self._stack_order = []
         self._user_moved = False
         self._centre_pending = False
         self._last_fit_height = -1
@@ -621,8 +622,12 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
         super().moveEvent(event)
         if self._panels:
             rect = self.frameGeometry()
+            # Stacked panels are positioned by the stack; the ones the
+            # user pulled out of it ride their own stored offset.
             for panel in self._panels.values():
-                panel.follow(rect)
+                if not panel.stacked:
+                    panel.follow(rect)
+            self._reflow_stack()
         # Only a move the *pointer* is making counts. Windows re-homes
         # windows by itself whenever the display layout changes — a monitor
         # sleeping, a game switching resolution, an RDP session, a DPI
@@ -952,25 +957,52 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
         self._open_panel(kind, stack=False)
 
     def _open_panel(self, kind, stack):
-        below = self._lowest_panel_rect() if stack else None
         panel = ProcessPanel(self.theme, self.settings, kind)
         panel.refresh_requested.connect(self.breakdown_requested)
         panel.closed.connect(self._forget_panel)
+        panel.resized.connect(lambda _k: self._reflow_stack())
         self._panels[kind] = panel
-        panel.open_at(self.frameGeometry(), below)
+        if kind not in self._stack_order:
+            self._stack_order.append(kind)
+        panel.open_at(self.frameGeometry(), self._last_stacked_rect())
+        self._reflow_stack()
 
-    def _lowest_panel_rect(self):
-        """The bottom-most open panel, which a new one stacks under."""
-        open_ones = [p for p in self._panels.values() if p.isVisible()]
-        if not open_ones:
-            return None
-        return max((p.frameGeometry() for p in open_ones),
-                   key=lambda r: r.bottom())
+    def _stacked_panels(self):
+        """The panels the overlay still lays out, in the order they were
+        opened. One the user has dragged is not among them."""
+        out = []
+        for kind in self._stack_order:
+            panel = self._panels.get(kind)
+            if panel is not None and panel.stacked and panel.isVisible():
+                out.append(panel)
+        return out
+
+    def _last_stacked_rect(self):
+        stacked = self._stacked_panels()
+        return stacked[-1].frameGeometry() if stacked else None
+
+    def _reflow_stack(self):
+        """Re-lay the stack under the card.
+
+        Run on every panel resize, not once at open: a panel is short
+        while it says "Reading..." and grows when its rows land, so a
+        position computed at open time left three different gaps. Panels
+        the user has dragged out keep their own offset and are skipped.
+        """
+        rect = self.frameGeometry()
+        below = None
+        for panel in self._stacked_panels():
+            panel.place_in_stack(rect, below)
+            below = panel.frameGeometry()
 
     def _forget_panel(self, kind):
         panel = self._panels.pop(kind, None)
+        if kind in self._stack_order:
+            self._stack_order.remove(kind)
         if panel is not None:
             panel.deleteLater()
+        # the ones below close the gap the closed one left
+        self._reflow_stack()
 
     def set_breakdown(self, kind, entries):
         panel = self._panels.get(kind)

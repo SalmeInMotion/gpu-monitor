@@ -22,7 +22,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      164 offscreen checks, no window, no pytest
+tests/functional.py      169 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the reverse-engineered ia-usage design spec
 vendor/app_template      bundled copy of the shared Windows template

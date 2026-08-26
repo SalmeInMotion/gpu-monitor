@@ -37,7 +37,11 @@ MAX_ROWS_SHOWN = 9      # past this the list scrolls instead of growing
 ROW_HEIGHT = 22         # kept in step with the QSS below
 
 REFRESH_MS = 2000       # slower than the card: this walks the process table
-STACK_GAP = 6           # between panels opened with Shift
+# Between two stacked panels, measured between what you can *see*. Each
+# window carries a GUTTER of transparent shadow room on every side, so
+# the windows themselves overlap by 2*GUTTER - STACK_GAP for the painted
+# cards to sit this far apart.
+STACK_GAP = 8
 
 # Straight from the metric table, so the panel is always titled with the
 # exact word that was double-clicked. "Video memory"/"System memory" read
@@ -55,6 +59,9 @@ class ProcessPanel(QWidget):
 
     refresh_requested = Signal(str)     # kind
     closed = Signal(str)                # kind, so the overlay can forget it
+    # Height changes when the rows arrive, and again on every refresh that
+    # adds or drops one. Whoever stacks these has to hear about it.
+    resized = Signal(str)
 
     def __init__(self, theme, settings, kind, parent=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
@@ -71,6 +78,8 @@ class ProcessPanel(QWidget):
         self._clearing = False
         self.kind = kind
         self._entries = []
+        # In the stack the overlay lays out, until the user drags it out.
+        self.stacked = True
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
@@ -147,11 +156,20 @@ class ProcessPanel(QWidget):
 
     def open_at(self, anchor_rect, below=None):
         """Show it: beside the card, or under an already-open panel."""
-        self._place(anchor_rect, below)
+        self.place_in_stack(anchor_rect, below)
         self.show()
         self.raise_()
         self._ask()
         self._timer.start()
+
+    def place_in_stack(self, anchor_rect, below=None):
+        """Put it where the stack says, without showing or hiding it."""
+        self._place(anchor_rect, below)
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        if self.stacked:
+            self.resized.emit(self.kind)
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         self._timer.stop()
@@ -177,9 +195,11 @@ class ProcessPanel(QWidget):
 
     def moveEvent(self, event):  # noqa: N802 - Qt naming
         super().moveEvent(event)
-        # Any move that was not follow()'s own is the user dragging the
-        # panel, which re-sets where it rides from then on.
-        if not self._following and self._card_pos is not None:
+        # Only a free panel tracks an offset; a stacked one is positioned
+        # by the overlay. Leaving the stack happens in mousePressEvent,
+        # not here: show() also emits a moveEvent, and reading that as a
+        # drag took every panel out of the stack the instant it opened.
+        if not self._following and not self.stacked                 and self._card_pos is not None:
             self._offset = self.pos() - self._card_pos
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt naming
@@ -188,6 +208,11 @@ class ProcessPanel(QWidget):
         if event.button() == Qt.LeftButton:
             handle = self.windowHandle()
             if handle is not None:
+                # Dragging it by hand is what takes it out of the stack:
+                # the one gesture that can move a panel, and unambiguous,
+                # where guessing from moveEvent is not.
+                self.stacked = False
+                self._card_pos = self._card_pos or self.pos()
                 handle.startSystemMove()
                 return
         super().mousePressEvent(event)
@@ -212,8 +237,15 @@ class ProcessPanel(QWidget):
         height = self.sizeHint().height()
         if below is not None:
             # Stacked: same column as the panel above, just under it.
+            # `below` is a *window* rect, and both windows carry GUTTER of
+            # transparent shadow room, so the visible gap is the window
+            # gap plus two gutters -- subtract them or the cards sit 20px
+            # apart while the constant says 8.
             x = below.left()
-            y = below.bottom() + STACK_GAP
+            # bottom() is the last pixel *inside* the rect, so the edge
+            # below it is bottom() + 1; without that the cards sit one
+            # pixel closer than STACK_GAP says.
+            y = below.bottom() + 1 - 2 * GUTTER + STACK_GAP
             if y + height > area.bottom():
                 # No room left under it. Start a fresh column beside the
                 # stack rather than clamping, which would drop this panel
@@ -227,7 +259,7 @@ class ProcessPanel(QWidget):
             self._offset = QPoint(x, y) - self._card_pos
             self._following = True
             try:
-                self.move(x, y)
+                self.move(self._clamped(QPoint(x, y)))
             finally:
                 self._following = False
             return
