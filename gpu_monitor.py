@@ -177,6 +177,10 @@ def main():
     guard.activated.connect(overlay.raise_to_front)
     sampler = Sampler(int(ctx.settings.get("interval_ms", 1000)))
     sampler.sampled.connect(overlay.on_sample)
+    # Clicking a memory bar asks for a per-process breakdown; the walk
+    # happens on the sampler thread and comes back the same way.
+    overlay.breakdown_requested.connect(sampler.request_breakdown)
+    sampler.breakdown.connect(overlay.set_breakdown)
 
     def open_prefs():
         dialog = PreferencesDialog(ctx.settings, ctx.theme, overlay)

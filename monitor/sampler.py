@@ -21,6 +21,7 @@ import subprocess
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 
+from . import breakdown as bd
 from .gpu_pdh import PdhGpu
 
 log = logging.getLogger("gpu_monitor.sampler")
@@ -172,6 +173,10 @@ class SamplerWorker(QObject):
     """Lives on the sampler thread; owns the timer that drives polling."""
 
     sampled = Signal(dict)
+    # (kind, [breakdown.Entry, ...]) -- computed here rather than on the UI
+    # thread because walking the process table is milliseconds, not
+    # microseconds, and the card animates at 60fps while it happens.
+    breakdown = Signal(str, list)
 
     def __init__(self, interval_ms, gpu_index=0):
         super().__init__()
@@ -201,6 +206,29 @@ class SamplerWorker(QObject):
         if self._timer is not None:
             self._timer.start(interval_ms)
 
+    def compute_breakdown(self, kind):
+        """Answer one request for "who is holding this memory"."""
+        try:
+            if kind == bd.KIND_GPU:
+                entries = bd.gpu_entries(self._ensure_pdh())
+            else:
+                entries = bd.ram_entries()
+        except Exception as exc:            # never take the thread down
+            log.warning("breakdown(%s) failed: %s", kind, exc)
+            entries = []
+        self.breakdown.emit(kind, entries)
+
+    def _ensure_pdh(self):
+        """The counters, opened on demand.
+
+        On an NVIDIA machine nothing else needs them -- nvidia-smi feeds
+        the card -- so opening a PDH query at startup there would be pure
+        cost. The first click on the VRAM bar is what pays for it.
+        """
+        if self._pdh is None:
+            self._pdh = PdhGpu()
+        return self._pdh
+
     def shutdown(self):
         if self._timer is not None:
             self._timer.stop()
@@ -225,8 +253,7 @@ class SamplerWorker(QObject):
             log.info("nvidia-smi returned nothing; using Windows GPU counters")
             self._use_nvidia = False
 
-        if self._pdh is None:
-            self._pdh = PdhGpu()
+        self._ensure_pdh()
         blank = {k: None for k in _NUMERIC_KEYS}
         blank["gpu_name"] = None
         blank.update(self._pdh.sample())
@@ -242,6 +269,7 @@ class Sampler(QObject):
     """
 
     sampled = Signal(dict)
+    breakdown = Signal(str, list)
 
     def __init__(self, interval_ms=1000, gpu_index=0, parent=None):
         super().__init__(parent)
@@ -250,6 +278,7 @@ class Sampler(QObject):
         self._worker = SamplerWorker(interval_ms, gpu_index)
         self._worker.moveToThread(self._thread)
         self._worker.sampled.connect(self.sampled)
+        self._worker.breakdown.connect(self.breakdown)
         self._thread.started.connect(self._worker.start)
         self._thread.finished.connect(self._worker.shutdown)
 
@@ -261,6 +290,15 @@ class Sampler(QObject):
         # restarted there, never from the UI thread.
         QTimer.singleShot(0, self._worker,
                           lambda: self._worker.set_interval(interval_ms))
+
+    def request_breakdown(self, kind):
+        """Ask for a breakdown; it arrives on the `breakdown` signal.
+
+        Queued into the sampler thread, like set_interval: the work must
+        not happen here, and the reply crosses back as a queued signal.
+        """
+        QTimer.singleShot(0, self._worker,
+                          lambda: self._worker.compute_breakdown(kind))
 
     def stop(self):
         self._thread.quit()

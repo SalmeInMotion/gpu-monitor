@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect,
 from . import metrics as M
 from .meter import (CASCADE_STEP_MS, MeterRow, SectionHeader, flat_gradient,
                     ramp_colors)
+from .processes import ProcessPanel
 
 log = logging.getLogger("gpu_monitor.overlay")
 
@@ -170,6 +171,9 @@ class Overlay(QWidget):
     """The window. Owns the rows, the chrome and the settings it mirrors."""
 
     prefs_requested = Signal()
+    # A meter was clicked: someone with a sampler should answer on
+    # set_breakdown(). The overlay does not own the sampler, so it asks.
+    breakdown_requested = Signal(str)
     # Qt.Tool windows do not reliably carry WA_QuitOnClose, so the app is
     # told to exit explicitly rather than relying on quitOnLastWindowClosed.
     closed = Signal()
@@ -194,6 +198,7 @@ class Overlay(QWidget):
         self._sample = {}
         self._gpu_name = None
         self._shown_groups = []
+        self._panel = None
         self._user_moved = False
         self._centre_pending = False
         self._last_fit_height = -1
@@ -299,6 +304,14 @@ class Overlay(QWidget):
 
             for metric in M.metrics_in(group):
                 row = MeterRow(metric, block)
+                if metric.breakdown:
+                    row.meter.set_interactive(True)
+                    row.meter.clicked.connect(
+                        lambda k=metric.breakdown: self.show_breakdown(k))
+                    # The bar swallowed the press to tell a click from a
+                    # drag; if it turned out to be a drag, it hands the
+                    # card's own move back to us.
+                    row.meter.drag_requested.connect(self.begin_drag)
                 lay.addWidget(row)
                 lay.addSpacing(ROW_GAP)
                 self._rows[metric.key] = row
@@ -585,6 +598,18 @@ QToolButton#Chrome:checked {{ color: {t['TEXT']}; }}
         self._chrome_anim.setStartValue(self._chrome_fx.opacity())
         self._chrome_anim.setEndValue(target)
         self._chrome_anim.start()
+
+    def begin_drag(self):
+        """Start moving the card. Also the meters' escape hatch: a press
+        on a clickable bar that turns into a drag ends up here."""
+        if self.settings.get("locked"):
+            return
+        handle = self.windowHandle()
+        if handle is None:
+            return
+        self._user_moved = True
+        self._centre_pending = False
+        handle.startSystemMove()
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt naming
         if event.button() == Qt.LeftButton and not self.settings.get("locked"):
@@ -944,6 +969,17 @@ QToolButton#Chrome:checked {{ color: {t['TEXT']}; }}
         self.settings.save()
         self.reload_layout()   # owns the property flip and the repolish
 
+    def show_breakdown(self, kind):
+        """Open (or toggle) the list of what is holding that memory."""
+        if self._panel is None:
+            self._panel = ProcessPanel(self.theme, self)
+            self._panel.refresh_requested.connect(self.breakdown_requested)
+        self._panel.open_for(kind, self.frameGeometry())
+
+    def set_breakdown(self, kind, entries):
+        if self._panel is not None:
+            self._panel.set_entries(kind, entries)
+
     def _show_menu(self, pos):
         menu = self.build_menu()
         # exec() returns when the menu closes but the QMenu stays parented
@@ -1030,6 +1066,8 @@ QToolButton#Chrome:checked {{ color: {t['TEXT']}; }}
         self.apply_theme()
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
+        if self._panel is not None:
+            self._panel.close()
         self._persist_position()
         super().closeEvent(event)
         self.closed.emit()

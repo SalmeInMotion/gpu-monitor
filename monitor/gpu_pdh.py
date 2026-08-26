@@ -41,6 +41,15 @@ ERROR_SUCCESS = 0
 COUNTER_ENGINE = r"\GPU Engine(*)\Utilization Percentage"
 COUNTER_ADAPTER_MEM = r"\GPU Adapter Memory(*)\Dedicated Usage"
 COUNTER_PROCESS_MEM = r"\GPU Process Memory(*)\Dedicated Usage"
+# Per-process VRAM. NOT "Dedicated Usage", which counts committed address
+# space: on this machine it summed to 46 GB while the adapter really held
+# 5.6. "Local Usage" is memory resident in the adapter and sums to just
+# under the adapter's own figure, the gap being driver allocations that
+# belong to no process.
+COUNTER_PROCESS_LOCAL = r"\GPU Process Memory(*)\Local Usage"
+
+# "pid_8644_luid_0x00000000_0x00014A29_phys_0"
+_INSTANCE = re.compile(r"(?:pid_(\d+)_)?luid_(\S+?)_phys")
 
 # "pid_1956_luid_0x00000000_0x0000e9bf_phys_0_eng_0_engtype_3d"
 _ENGTYPE = re.compile(r"engtype_(\w+)$")
@@ -254,6 +263,7 @@ class PdhGpu:
         self.ok = False
         self._query = None
         self._mem_key = None
+        self._luid = None      # the adapter the bar and the list both mean
         self.name, self.mem_total = (None, None)
         try:
             self._open()
@@ -270,6 +280,8 @@ class PdhGpu:
             self._mem_key = "adapter"
         elif query.add("mem", COUNTER_PROCESS_MEM):
             self._mem_key = "process"
+        # Optional: only needed when the breakdown panel is opened.
+        query.add("procmem", COUNTER_PROCESS_LOCAL)
         if not has_engine and self._mem_key is None:
             query.close()
             raise OSError("no GPU counters on this system")
@@ -302,7 +314,53 @@ class PdhGpu:
 
         memory = self._query.read("mem")
         if memory:
-            out["mem_used"] = sum(memory.values()) / (1024.0 ** 2)  # MiB
+            if self._mem_key == "adapter":
+                # One adapter, the busiest -- not the sum of all of them.
+                # A machine here has three (the real GPU, a virtual
+                # display, a render-only device) and summing them put
+                # ~700 MiB of somebody else's memory on a bar whose total
+                # comes from one card. It also has to agree with
+                # per_process(), which can only speak for one adapter.
+                instance = max(memory, key=memory.get)
+                found = _INSTANCE.search(instance)
+                self._luid = found.group(2) if found else None
+                out["mem_used"] = memory[instance] / (1024.0 ** 2)
+            else:
+                out["mem_used"] = sum(memory.values()) / (1024.0 ** 2)
+        return out
+
+    def _resolve_luid(self):
+        """Which adapter to speak for: the one holding the most memory."""
+        memory = self._query.read("mem") if self._query else {}
+        if not memory:
+            return
+        found = _INSTANCE.search(max(memory, key=memory.get))
+        self._luid = found.group(2) if found else None
+
+    def per_process(self):
+        """{pid: bytes} of video memory, for the adapter the bar shows.
+
+        Restricted to that adapter on purpose: the same process appears
+        once per adapter it has touched, and adding those together would
+        count a window manager's memory twice.
+        """
+        if not self.ok or self._query is None:
+            return {}
+        self._query.collect()
+        if self._luid is None:
+            # sample() normally settles this, but on an NVIDIA machine
+            # nvidia-smi feeds the card and sample() is never called --
+            # the breakdown is then the only user of this object.
+            self._resolve_luid()
+        out = {}
+        for instance, value in self._query.read("procmem").items():
+            found = _INSTANCE.search(instance)
+            if not found or not found.group(1):
+                continue
+            if self._luid and found.group(2) != self._luid:
+                continue
+            pid = int(found.group(1))
+            out[pid] = out.get(pid, 0.0) + value
         return out
 
     def close(self):

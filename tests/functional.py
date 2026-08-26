@@ -189,6 +189,71 @@ check("a long adapter name is elided clear of the chrome",
 ov.on_sample(SAMPLE)
 settle()
 
+print("\n-- memory breakdown: grouping, threshold, order --")
+from PySide6.QtCore import QRect
+from monitor import breakdown as bd
+from monitor.processes import ProcessPanel
+
+MB = 1024 * 1024
+fake = {10: 900 * MB, 11: 700 * MB, 12: 100 * MB, 13: 600 * MB, 14: 20 * MB}
+fake_names = {10: "big.exe", 11: "big.exe", 12: "big.exe",
+              13: "csrss.exe", 14: "tiny.exe"}
+rows = bd._collect(fake, fake_names)
+check("processes of one exe are grouped",
+      [e.name for e in rows] == ["big", "csrss"], str([e.name for e in rows]))
+check("the group sums every instance, small ones included",
+      rows[0].bytes == 1700 * MB, str(rows[0].bytes // MB))
+check("it carries every pid it summed", sorted(rows[0].pids) == [10, 11, 12],
+      str(rows[0].pids))
+check("under 512 MB never reaches the list",
+      all(e.bytes >= bd.HIDE_BELOW for e in rows) and "tiny" not in
+      [e.name for e in rows])
+check("biggest first", [e.bytes for e in rows] == sorted(
+      [e.bytes for e in rows], reverse=True))
+
+# Regression: a stray comment once swallowed half this set, and the only
+# symptom was that csrss quietly became selectable.
+for critical in ("csrss", "smss", "wininit", "winlogon", "services",
+                 "lsass", "svchost", "dwm", "system"):
+    check(f"{critical} is protected", critical in bd.PROTECTED)
+check("an ordinary app is not protected", "chrome" not in bd.PROTECTED)
+check("the protected flag reaches the entry", rows[1].protected)
+
+import os as _os
+check("terminate refuses our own process",
+      bd.terminate([_os.getpid()]) == (0, 0, 1))
+
+print("\n-- the process panel --")
+panel = ProcessPanel(ctx.theme)
+panel.open_for(bd.KIND_RAM, QRect(200, 200, 312, 494))
+settle()
+panel.set_entries(bd.KIND_RAM, rows)
+settle()
+check("panel lists what it was given", panel.list.topLevelItemCount() == 2)
+check("panel titles itself for the kind", panel.title.text() == "System memory",
+      panel.title.text())
+check("panel totals what it lists", panel.total.text() == bd.fmt_bytes(
+      sum(e.bytes for e in rows)), panel.total.text())
+check("End is disabled with nothing chosen", not panel.btn_end.isEnabled())
+
+panel.list.topLevelItem(1).setSelected(True)      # csrss, protected
+settle()
+check("a protected row does not stay selected",
+      not panel.list.topLevelItem(1).isSelected())
+check("and it is not in what End would touch",
+      not any(e.protected for e in panel._selected_entries()))
+check("...so End stays disabled", not panel.btn_end.isEnabled())
+
+panel.list.topLevelItem(0).setSelected(True)      # big, ordinary
+settle()
+check("an ordinary row selects", panel.list.topLevelItem(0).isSelected())
+check("End enables for it", panel.btn_end.isEnabled())
+check("End would only touch the unprotected pids",
+      sorted(p for e in panel._selected_entries() for p in e.pids) == [10, 11, 12])
+check("the 512 MB rule is stated in the panel",
+      "512 MB" in panel.hint.text(), panel.hint.text())
+panel.close()
+
 print("\n-- context menu --")
 menu = ov.build_menu()
 labels = [a.text() for a in menu.actions() if a.text()]

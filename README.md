@@ -14,12 +14,15 @@ gpu_monitor.py           entry point: settings, migration, wiring
 monitor/metrics.py       what can be shown and how each metric reads
 monitor/sampler.py       nvidia-smi + psutil, on its own thread
 monitor/gpu_pdh.py       fallback GPU readings from Windows' own counters
+monitor/breakdown.py     which processes hold the memory, and ending them
+monitor/winproc.py       the whole process table in one system call
+monitor/processes.py     the panel a click on a memory bar opens
 monitor/meter.py         the painted 9px bar, its row, the section header
 monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      90 offscreen checks, no window, no pytest
+tests/functional.py      125 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the reverse-engineered ia-usage design spec
 vendor/app_template      bundled copy of the shared Windows template
@@ -106,6 +109,23 @@ green → amber → red ramp is kept for the metrics where filling up really
 is the problem, and the rest take the accent colour. Turn
 *Threshold colours* off in Preferences to make every bar the accent, which
 is what ia-usage itself does the moment you pick a custom accent.
+
+## Clicking a memory bar
+
+The **VRAM** and **RAM** bars open a list of what is holding that memory,
+biggest first, grouped per executable — one browser is fifty processes,
+and fifty identical rows answer nothing. Anything under 512 MB is left
+out, so the list never adds up to the bar: the rest is small fry plus, on
+the GPU, the driver's own allocations.
+
+Pick one or more and **End process** closes them, after a confirmation
+naming what goes. Windows' own processes are listed, because they really
+are using the memory, but greyed and impossible to select: ending
+ or  takes the session with it.
+
+Video memory per process comes from  —
+not , which counts committed address space and reported
+46 GB against an adapter really holding 5.6.
 
 ## How it is built
 

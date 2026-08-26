@@ -73,7 +73,7 @@ class Metric:
     """
 
     def __init__(self, key, label, group, fraction, value, caption=None,
-                 default=True, needs=(), ramp=RAMP_LOAD):
+                 default=True, needs=(), ramp=RAMP_LOAD, breakdown=None):
         self.key = key
         self.label = label
         self.group = group
@@ -82,6 +82,9 @@ class Metric:
         self._caption = caption
         self.default = default
         self.ramp = ramp
+        # "gpu" / "ram" for the two meters whose bar can be clicked to see
+        # which processes are holding that memory; None for the rest.
+        self.breakdown = breakdown
         # sample keys that must be non-None for this row to have data
         self.needs = tuple(needs)
 
@@ -119,6 +122,7 @@ METRICS = (
                            f"{_fmt_gb(s['mem_total'])} GB"),
         needs=("mem_used", "mem_total"),
         ramp=RAMP_QUOTA,
+        breakdown="gpu",
     ),
     Metric(
         "gpu", "GPU usage", GROUP_GPU,
@@ -174,6 +178,7 @@ METRICS = (
                            f"{_fmt_gb(s['ram_total'])} GB"),
         needs=("ram_used", "ram_total"),
         ramp=RAMP_QUOTA,
+        breakdown="ram",
     ),
 )
 

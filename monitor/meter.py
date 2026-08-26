@@ -22,7 +22,8 @@ and a live hardware monitor are not the same thing:
 
 from __future__ import annotations
 
-from PySide6.QtCore import (QEasingCurve, QRectF, Qt, QTimer, QVariantAnimation)
+from PySide6.QtCore import (QEasingCurve, QRectF, Qt, QTimer,
+                            QVariantAnimation, Signal)
 from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
@@ -49,6 +50,10 @@ TWEEN_MS = 150       # every later change
 # Below this much movement a tween is invisible and just burns repaints.
 TWEEN_EPSILON = 0.01
 
+# Past this much pointer travel a press on a bar was a drag of the
+# card, not a click on the bar.
+DRAG_SLOP = 4
+
 
 def flat_gradient(accent_hex):
     """ia-usage's own override for a user-picked accent: each channel
@@ -69,7 +74,16 @@ def ramp_colors(fraction):
 
 
 class Meter(QWidget):
-    """The bar itself. `set_value(None)` is the no-data state."""
+    """The bar itself. `set_value(None)` is the no-data state.
+
+    The two memory bars are clickable. That has to coexist with the whole
+    card being a drag handle, so the press is held here and only decided
+    on release: moved more than DRAG_SLOP and it was a drag, which is
+    handed back to the window; released in place and it was a click.
+    """
+
+    clicked = Signal()
+    drag_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,8 +106,45 @@ class Meter(QWidget):
         self._delay.setSingleShot(True)
         self._delay.timeout.connect(self._anim.start)
 
+        self._interactive = False
+        self._press_at = None
+
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_compact(False)
+
+    def set_interactive(self, on):
+        """Whether this bar answers a click. The hand cursor is the only
+        hint that it does, so it is not optional."""
+        self._interactive = bool(on)
+        if on:
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.unsetCursor()
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt naming
+        if self._interactive and event.button() == Qt.LeftButton:
+            self._press_at = event.globalPosition().toPoint()
+            event.accept()
+            return
+        # Not ours: let it reach the window, which starts the card's drag.
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802 - Qt naming
+        if self._press_at is None:
+            super().mouseMoveEvent(event)
+            return
+        moved = (event.globalPosition().toPoint() - self._press_at)
+        if moved.manhattanLength() > DRAG_SLOP:
+            self._press_at = None
+            self.drag_requested.emit()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt naming
+        if self._press_at is not None:
+            self._press_at = None
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def set_compact(self, compact):
         self.setFixedHeight(BAR_HEIGHT_COMPACT if compact else BAR_HEIGHT)

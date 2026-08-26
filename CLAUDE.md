@@ -285,3 +285,60 @@ machine and nowhere else.
 shared one deliberately wins wherever it exists, so a fix to the template
 reaches this app without re-vendoring; refresh the copy (and commit it)
 when the template gains something this app needs.
+
+## Clicking a memory bar: who is holding it, and ending them
+
+The VRAM and RAM meters are clickable (`Metric.breakdown`, `"gpu"` /
+`"ram"`); `monitor\processes.py` is the panel, `monitor\breakdown.py` the
+data behind it, both grouped per executable, sorted descending, with
+everything under 512 MB left out — Ivan's threshold, and the reason the
+panel's total never matches the bar.
+
+Four things here are load-bearing, and three of them cost a measurement
+to find:
+
+- **`GPU Process Memory\Local Usage`, never `Dedicated Usage`.** The
+  obvious counter is wrong: it counts committed address space, and
+  measured 46 GB of "per-process VRAM" against an adapter really holding
+  5.6 GB — QuickLook alone claimed 24.9 GB. `Local Usage` is what is
+  resident in the adapter and sums to just under its own figure, the gap
+  being driver allocations that belong to no process.
+- **One adapter, chosen by usage.** Instance names carry a LUID and this
+  machine has three adapters (the GPU, a virtual display, a render-only
+  device); the same process appears once per adapter it has touched.
+  `PdhGpu._resolve_luid()` picks the busiest and both the bar and the
+  list speak only for it. `sample()` used to sum all three, which put
+  ~700 MB of somebody else's memory on the bar.
+- **`monitor\winproc.py` exists for one reason: speed.**
+  `psutil.process_iter(["memory_info"])` opens a handle per process and
+  measured **1574 ms** for 461 processes — a visible freeze every time
+  the panel refreshed. `NtQuerySystemInformation` returns the whole table
+  in one call: **17 ms**, byte-identical figures (verified against psutil
+  process by process). The psutil path is still there as a fallback if
+  the struct ever stops matching.
+- **A click on a bar must not stop the card being dragged.** `Meter`
+  swallows the press, then decides on release: moved more than
+  `DRAG_SLOP` and it emits `drag_requested`, which calls
+  `Overlay.begin_drag()`; released in place and it emits `clicked`.
+
+### Ending processes: what protects Ivan from this
+
+- `breakdown.PROTECTED` is the list of names that are shown but never
+  selectable, because ending them takes Windows down. **A stray comment
+  once swallowed half that set** — `smss`, `csrss` and `wininit` ended up
+  inside a trailing `#` — and the only symptom was csrss quietly becoming
+  selectable. There is now a test naming each critical process
+  individually; keep it that way.
+- **`ItemIsSelectable` only stops the user.** `setSelected()` from code
+  ignores it, leaving a row that looks armed while `selectedItems()`
+  excludes it. `_drop_protected_selection()` clears that, and it has to
+  run on a `QTimer.singleShot(0, ...)`: done inside
+  `itemSelectionChanged`, Qt is still mid-update and re-applies the
+  selection right after.
+- `terminate()` refuses our own pid, refuses protected names, and refuses
+  anything it cannot even name (`AccessDenied` reading `.name()` means a
+  Windows process) — reported as *skipped*, not as a failure the user
+  might try to fix by running as admin.
+- There is a **confirmation dialog**, where Task Manager has none. This
+  list groups, so one row can be fifty processes, and unsaved work has no
+  undo.
