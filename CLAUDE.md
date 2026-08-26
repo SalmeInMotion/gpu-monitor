@@ -366,6 +366,30 @@ calls `GetAsyncKeyState`, so any test that moves the card must pin it
 the position-save timer and fails a later check. That is exactly how the
 satellite block made "an unprompted move does not arm the save" flaky.
 
+### Several panels at once
+
+Plain double-click **replaces** whatever is open; **Shift + double-click
+adds**, stacking the new panel under the ones already there. Both
+gestures toggle the kind they name: plain because a second double-click
+on the only open panel closes it (the behaviour that was there first),
+Shift because otherwise a stack could only be taken apart one X at a
+time.
+
+- **A panel is one kind for its whole life.** `ProcessPanel(theme,
+  settings, kind)`. The old design mutated `self.kind` on a single shared
+  window, which cannot survive four of them being open.
+- **The overlay owns the collection**, `Overlay._panels`, keyed by kind.
+  A panel emits `closed(kind)` from its own `closeEvent` so the overlay
+  can forget it; nothing else removes entries, so closing by X, by
+  gesture or by the card shutting down all take the same path.
+- **Stacking wraps to a new column** when nothing fits below
+  (`_place(..., below=...)`). Clamping instead would drop the new panel
+  on top of the one above and hide both.
+- **A panel clamped against a screen edge stops following the card**
+  that way. That is the intended trade: staying on screen beats tracking.
+  A test that moves the card must therefore use a stack that fits, or it
+  is asserting against the clamp rather than against `follow()`.
+
 ### The panel is a satellite, not a window of its own
 
 Reported as "se queda abierta y no puedo moverla ni cerrarla". Four

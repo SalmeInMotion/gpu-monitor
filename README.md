@@ -22,7 +22,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      152 offscreen checks, no window, no pytest
+tests/functional.py      164 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the reverse-engineered ia-usage design spec
 vendor/app_template      bundled copy of the shared Windows template
@@ -121,10 +121,15 @@ the bar: the rest is small fry plus, on VRAM, the driver's own
 allocations. The panel is titled with the exact name you double-clicked,
 so no two of them can be mistaken for each other.
 
-The panel rides with the card: move the card and it comes along, drag the
-panel itself and it keeps the new offset from then on. It takes the
-card's transparency too, so the two read as one surface. Double-click the
-same word again to close it, or use the X.
+**Shift + double-click** adds a panel instead of replacing the open one,
+stacking it under the others — so you can watch VRAM, RAM, CPU and GPU
+side by side. A plain double-click always collapses back to the one you
+asked for, and double-clicking a name that is already open closes it, as
+does the X.
+
+The panels ride with the card: move the card and the whole stack comes
+along, drag one and it keeps its new offset from then on. They take the
+card's transparency too, so they read as one surface with it.
 
 Pick one or more and **End process** closes them, after a confirmation
 naming what goes. Windows' own processes are listed, because they really

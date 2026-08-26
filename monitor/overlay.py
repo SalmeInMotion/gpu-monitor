@@ -158,7 +158,7 @@ class Overlay(QWidget):
         self._sample = {}
         self._gpu_name = None
         self._shown_groups = []
-        self._panel = None
+        self._panels = {}
         self._user_moved = False
         self._centre_pending = False
         self._last_fit_height = -1
@@ -266,9 +266,10 @@ class Overlay(QWidget):
                 row = MeterRow(metric, block)
                 if metric.breakdown:
                     row.label.set_interactive(
-                        True, f"Double-click: what is using {metric.label}")
+                        True, f"Double-click: what is using {metric.label}"
+                              "\nShift: add it below the ones already open")
                     row.label.activated.connect(
-                        lambda k=metric.key: self.show_breakdown(k))
+                        lambda add, k=metric.key: self.show_breakdown(k, add))
                     # The word swallowed the press to tell a click from a
                     # drag; if it turned out to be a drag, it hands the
                     # card's own move back to us.
@@ -465,9 +466,9 @@ class Overlay(QWidget):
         alpha = max(0, min(255, round(
             int(self.settings.get("opacity", 100)) / 100.0 * 255)))
         self.card.set_fill(t["SURFACE"], alpha)
-        if self._panel is not None:
-            # it paints itself from the same tokens and the same opacity
-            self._panel.apply_theme()
+        for panel in self._panels.values():
+            # they paint from the same tokens and the same opacity
+            panel.apply_theme()
         for header in self._headers.values():
             header.set_ink(t["TEXT"])
         self.setStyleSheet(self._qss(t))
@@ -618,8 +619,10 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
 
     def moveEvent(self, event):  # noqa: N802 - Qt naming
         super().moveEvent(event)
-        if self._panel is not None and self._panel.isVisible():
-            self._panel.follow(self.frameGeometry())
+        if self._panels:
+            rect = self.frameGeometry()
+            for panel in self._panels.values():
+                panel.follow(rect)
         # Only a move the *pointer* is making counts. Windows re-homes
         # windows by itself whenever the display layout changes — a monitor
         # sleeping, a game switching resolution, an RDP session, a DPI
@@ -924,16 +927,55 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
         self.settings.save()
         self.reload_layout()   # owns the property flip and the repolish
 
-    def show_breakdown(self, kind):
-        """Open (or toggle) the list of what is holding that memory."""
-        if self._panel is None:
-            self._panel = ProcessPanel(self.theme, self.settings)
-            self._panel.refresh_requested.connect(self.breakdown_requested)
-        self._panel.open_for(kind, self.frameGeometry())
+    def show_breakdown(self, kind, additive=False):
+        """Plain double-click replaces whatever is open; Shift adds.
+
+        Both gestures toggle the kind they name -- plain so a second
+        double-click on the only open panel closes it, which is the
+        behaviour that was there first, and Shift so a stack can be taken
+        apart the same way it was built.
+        """
+        if additive:
+            if kind in self._panels:
+                self._panels[kind].close()
+            else:
+                self._open_panel(kind, stack=True)
+            return
+
+        others = [k for k in list(self._panels) if k != kind]
+        for other in others:
+            self._panels[other].close()
+        if kind in self._panels:
+            if not others:
+                self._panels[kind].close()
+            return
+        self._open_panel(kind, stack=False)
+
+    def _open_panel(self, kind, stack):
+        below = self._lowest_panel_rect() if stack else None
+        panel = ProcessPanel(self.theme, self.settings, kind)
+        panel.refresh_requested.connect(self.breakdown_requested)
+        panel.closed.connect(self._forget_panel)
+        self._panels[kind] = panel
+        panel.open_at(self.frameGeometry(), below)
+
+    def _lowest_panel_rect(self):
+        """The bottom-most open panel, which a new one stacks under."""
+        open_ones = [p for p in self._panels.values() if p.isVisible()]
+        if not open_ones:
+            return None
+        return max((p.frameGeometry() for p in open_ones),
+                   key=lambda r: r.bottom())
+
+    def _forget_panel(self, kind):
+        panel = self._panels.pop(kind, None)
+        if panel is not None:
+            panel.deleteLater()
 
     def set_breakdown(self, kind, entries):
-        if self._panel is not None:
-            self._panel.set_entries(kind, entries)
+        panel = self._panels.get(kind)
+        if panel is not None:
+            panel.set_entries(kind, entries)
 
     def _show_menu(self, pos):
         menu = self.build_menu()
@@ -1021,8 +1063,8 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
         self.apply_theme()
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
-        if self._panel is not None:
-            self._panel.close()
+        for panel in list(self._panels.values()):
+            panel.close()
         self._persist_position()
         super().closeEvent(event)
         self.closed.emit()

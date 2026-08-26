@@ -87,7 +87,9 @@ class RowLabel(QLabel):
     starts on the first press, and the second click never arrives.
     """
 
-    activated = Signal()
+    # True when Shift was held: add to whatever is already open
+    # rather than replacing it.
+    activated = Signal(bool)
     drag_requested = Signal()
 
     def __init__(self, text, parent=None):
@@ -130,7 +132,8 @@ class RowLabel(QLabel):
     def mouseDoubleClickEvent(self, event):  # noqa: N802 - Qt naming
         if self._interactive and event.button() == Qt.LeftButton:
             self._press_at = None
-            self.activated.emit()
+            self.activated.emit(
+                bool(event.modifiers() & Qt.ShiftModifier))
             event.accept()
             return
         super().mouseDoubleClickEvent(event)

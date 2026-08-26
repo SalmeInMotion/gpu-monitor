@@ -37,6 +37,7 @@ MAX_ROWS_SHOWN = 9      # past this the list scrolls instead of growing
 ROW_HEIGHT = 22         # kept in step with the QSS below
 
 REFRESH_MS = 2000       # slower than the card: this walks the process table
+STACK_GAP = 6           # between panels opened with Shift
 
 # Straight from the metric table, so the panel is always titled with the
 # exact word that was double-clicked. "Video memory"/"System memory" read
@@ -45,11 +46,17 @@ TITLES = {m.key: m.label for m in M.METRICS if m.breakdown}
 
 
 class ProcessPanel(QWidget):
-    """A list of memory hogs, and a way to end them."""
+    """A list of what is using one meter, and a way to end it.
+
+    One panel is one kind for its whole life. Several can be open at once
+    (Shift + double-click stacks them), so the kind cannot be a mutable
+    property of a single shared window any more.
+    """
 
     refresh_requested = Signal(str)     # kind
+    closed = Signal(str)                # kind, so the overlay can forget it
 
-    def __init__(self, theme, settings, parent=None):
+    def __init__(self, theme, settings, kind, parent=None):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint)
         self.theme = theme
@@ -62,7 +69,7 @@ class ProcessPanel(QWidget):
         self._following = False
         self._muted = "#909093"
         self._clearing = False
-        self.kind = bd.KIND_RAM
+        self.kind = kind
         self._entries = []
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -127,6 +134,9 @@ class ProcessPanel(QWidget):
         foot.addWidget(self.btn_end, 0)
         body.addLayout(foot)
 
+        self.title.setText(TITLES.get(kind, kind.upper()))
+        self._set_hint("Reading...")
+
         self._timer = QTimer(self)
         self._timer.setInterval(REFRESH_MS)
         self._timer.timeout.connect(self._ask)
@@ -135,17 +145,9 @@ class ProcessPanel(QWidget):
 
     # --- opening and closing ----------------------------------------------
 
-    def open_for(self, kind, anchor_rect):
-        """Show the panel for one kind, beside the card that owns it."""
-        if self.isVisible() and self.kind == kind:
-            self.close()
-            return
-        self.kind = kind
-        self.title.setText(TITLES.get(kind, kind.upper()))
-        self.total.setText("")
-        self.list.clear()
-        self._set_hint("Reading...")
-        self._place(anchor_rect)
+    def open_at(self, anchor_rect, below=None):
+        """Show it: beside the card, or under an already-open panel."""
+        self._place(anchor_rect, below)
         self.show()
         self.raise_()
         self._ask()
@@ -154,6 +156,7 @@ class ProcessPanel(QWidget):
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         self._timer.stop()
         super().closeEvent(event)
+        self.closed.emit(self.kind)
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt naming
         if event.key() == Qt.Key_Escape:
@@ -200,13 +203,34 @@ class ProcessPanel(QWidget):
         y = max(area.top(), min(point.y(), area.bottom() - self.height()))
         return QPoint(x, y)
 
-    def _place(self, anchor):
-        """To the right of the card if it fits, otherwise to its left, and
-        never off the screen the card is on."""
+    def _place(self, anchor, below=None):
+        """To the right of the card if it fits, otherwise to its left --
+        or directly under an already-open panel when stacking."""
         from PySide6.QtGui import QGuiApplication
         screen = QGuiApplication.screenAt(anchor.center())
         area = (screen or QGuiApplication.primaryScreen()).availableGeometry()
         height = self.sizeHint().height()
+        if below is not None:
+            # Stacked: same column as the panel above, just under it.
+            x = below.left()
+            y = below.bottom() + STACK_GAP
+            if y + height > area.bottom():
+                # No room left under it. Start a fresh column beside the
+                # stack rather than clamping, which would drop this panel
+                # on top of the one above and hide both.
+                x = below.right() + STACK_GAP
+                y = anchor.top()
+                if x + self.width() > area.right():
+                    x = max(area.left(), area.right() - self.width())
+            y = max(area.top(), min(y, area.bottom() - height))
+            self._card_pos = anchor.topLeft()
+            self._offset = QPoint(x, y) - self._card_pos
+            self._following = True
+            try:
+                self.move(x, y)
+            finally:
+                self._following = False
+            return
         x = anchor.right() + 4
         if x + self.width() > area.right():
             x = anchor.left() - self.width() - 4

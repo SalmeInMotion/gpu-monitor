@@ -269,8 +269,8 @@ check("two readings at the same instant are refused",
       bd.cpu_entries((100.0, {}, {}), (100.0, {}, {})) == [])
 
 print("\n-- the process panel --")
-panel = ProcessPanel(ctx.theme, ctx.settings)
-panel.open_for(bd.KIND_RAM, QRect(200, 200, 312, 494))
+panel = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
+panel.open_at(QRect(200, 200, 312, 494))
 settle()
 panel.set_entries(bd.KIND_RAM, rows)
 settle()
@@ -299,6 +299,78 @@ check("the 512 MB rule is stated in the panel",
       "512 MB" in panel.hint.text(), panel.hint.text())
 panel.close()
 
+print("\n-- several panels at once --")
+ov._pointer_held = lambda: False
+ov.move(20, 20)
+for key in list(ov._panels):
+    ov._panels[key].close()
+settle()
+
+ov.show_breakdown(bd.KIND_RAM)
+settle()
+check("plain opens one", set(ov._panels) == {bd.KIND_RAM}, str(set(ov._panels)))
+
+ov.show_breakdown(bd.KIND_CPU)
+settle()
+check("plain replaces it rather than adding",
+      set(ov._panels) == {bd.KIND_CPU}, str(set(ov._panels)))
+
+ov.show_breakdown(bd.KIND_RAM, additive=True)
+settle()
+check("Shift adds to what is open",
+      set(ov._panels) == {bd.KIND_CPU, bd.KIND_RAM}, str(set(ov._panels)))
+first, second = ov._panels[bd.KIND_CPU], ov._panels[bd.KIND_RAM]
+check("the new one lands under the other",
+      second.y() >= first.frameGeometry().bottom(),
+      f"new top {second.y()} vs lower edge {first.frameGeometry().bottom()}")
+check("and in the same column", second.x() == first.x(),
+      f"{second.x()} vs {first.x()}")
+
+# Tracking is checked on a stack that fits: a panel clamped against a
+# screen edge cannot follow the card further that way, and staying on
+# screen is the behaviour that wins there.
+tops = {k: p.y() for k, p in ov._panels.items()}
+ov.move(ov.x(), ov.y() + 15)
+settle()
+check("the whole stack follows the master card",
+      all(p.y() == tops[k] + 15 for k, p in ov._panels.items()),
+      str({k: (tops[k], p.y()) for k, p in ov._panels.items()}))
+
+ov.show_breakdown(bd.KIND_GPU, additive=True)
+settle()
+check("Shift again makes three", len(ov._panels) == 3, str(set(ov._panels)))
+third = ov._panels[bd.KIND_GPU]
+# On this 800x800 offscreen screen a third panel cannot fit under the
+# second, so it wraps to a new column. Either way it must not land on
+# top of the one before it.
+check("a third panel never overlaps the second",
+      not third.frameGeometry().intersects(second.frameGeometry()),
+      f"{third.frameGeometry()} vs {second.frameGeometry()}")
+from monitor.processes import STACK_GAP as _GAP
+from PySide6.QtGui import QGuiApplication as _GA
+_area = _GA.primaryScreen().availableGeometry()
+check("...and it only left the column because nothing fit below",
+      second.frameGeometry().bottom() + _GAP + third.height() > _area.bottom(),
+      f"below would end at "
+      f"{second.frameGeometry().bottom() + _GAP + third.height()}, "
+      f"screen ends at {_area.bottom()}")
+
+ov.show_breakdown(bd.KIND_RAM, additive=True)
+settle()
+check("Shift on an open one takes it back out",
+      set(ov._panels) == {bd.KIND_CPU, bd.KIND_GPU}, str(set(ov._panels)))
+
+ov.show_breakdown(bd.KIND_CPU)
+settle()
+check("a plain double-click collapses the stack to that one",
+      set(ov._panels) == {bd.KIND_CPU}, str(set(ov._panels)))
+
+ov.show_breakdown(bd.KIND_CPU)
+settle()
+check("and closes the last one", ov._panels == {}, str(set(ov._panels)))
+del ov._pointer_held
+ov._save_timer.stop()
+
 print("\n-- the panel is a satellite of the card --")
 # Through the overlay's own panel, not a loose one: the following is
 # wired in Overlay.moveEvent, so a standalone instance proves nothing.
@@ -312,7 +384,7 @@ ov._pointer_held = lambda: False
 ov.move(20, 20)
 ov.show_breakdown(bd.KIND_RAM)
 settle()
-sat = ov._panel
+sat = ov._panels[bd.KIND_RAM]
 check("the card owns a panel once opened", sat is not None and sat.isVisible())
 check("it has a close button of its own", sat.btn_close.isVisible())
 first = sat.pos()
@@ -342,13 +414,13 @@ check("...and follows it back to opaque", sat._fill.alpha() == 255)
 
 ov.show_breakdown(bd.KIND_RAM)
 settle()
-check("the same word again closes it", not sat.isVisible())
+check("the same word again closes it", bd.KIND_RAM not in ov._panels)
 ov.show_breakdown(bd.KIND_RAM)
 settle()
-check("and opens it again", sat.isVisible())
-sat.btn_close.click()
+check("and opens it again", bd.KIND_RAM in ov._panels)
+ov._panels[bd.KIND_RAM].btn_close.click()
 settle()
-check("the close button closes it", not sat.isVisible())
+check("the close button closes it", bd.KIND_RAM not in ov._panels)
 del ov._pointer_held
 ov._save_timer.stop()
 
