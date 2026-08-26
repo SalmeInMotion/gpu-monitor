@@ -196,3 +196,87 @@ the real monitor is up. It must stay at ALL PASS.
 
 For live checks use the Supervisor bridge rather than asking Ivan to click
 things; the app attaches automatically via the template's `create_app()`.
+
+## It is a git repo now, and it is public
+
+`https://github.com/SalmeInMotion/gpu-monitor`, `main`, public, created
+2026-08-26. The working copy at `C:\IA\Tools\Apps\GPU_Monitor` **is** the
+repo — there is no separate clone. So a change here is a change to a
+published tool: commit it and push it, rather than leaving the two to
+drift.
+
+Deliberately not tracked (see `.gitignore`): `_backups\`,
+`tests\_scratch_appdata\`, `_tip.png`, and `vram_monitor_config.json` —
+that last one is Ivan's own leftover config, it carries his window
+position, and `migrate_legacy()` only ever reads it on his machine.
+
+`CLAUDE.md` *is* tracked, on purpose: the rules above are what stop the
+next session breaking his shortcuts, and they are worth as much to a
+clone as to this copy.
+
+## Two GPU backends, and why rows disappear
+
+`monitor\sampler.py` prefers `nvidia-smi` and falls back to
+`monitor\gpu_pdh.py`, which reads the Windows performance counters Task
+Manager itself uses. The fallback is chosen **once**: a first blank
+answer from nvidia-smi means there is no NVIDIA driver here, and paying
+for a failed process spawn every second for the rest of the session buys
+nothing.
+
+What the fallback can and cannot do:
+
+- **Can**: utilisation (per engine, reported the way Task Manager does it
+  — the busiest engine *type*, not the sum, so 90% 3D and 40% copy reads
+  90) and video memory used.
+- **Cannot**: temperature, power, fan, clocks. Windows publishes none of
+  them; they need NVML or ADL.
+
+Hence `Overlay._has_sensor()`: a metric that has never once produced a
+reading is left out of the card entirely, rather than shown as a row
+reading `--` forever. Four dead rows say "broken"; a missing row says
+"not measurable here". A metric that *has* read before and then drops out
+keeps its row and shows `--`, because that really is a dropout.
+
+Two traps `gpu_pdh.py` already paid for:
+
+- **PDH entry points need `restype`.** Without it ctypes returns a signed
+  32-bit int, so `PDH_MORE_DATA` (0x800007D2) arrives as -2147481134 and
+  every status comparison is wrong. It looked exactly like "this machine
+  has no GPU counters" on a machine with 869 of them.
+- **`Win32_VideoController.AdapterRAM` saturates at 4 GB.** The real
+  figure is `HardwareInformation.qwMemorySize` under the display class
+  key. On the AMD box that is the difference between reporting 4 GB and
+  the true 96 GB.
+
+## It also runs on AI-cachofo
+
+Installed 2026-08-26 at the same path, `C:\IA\Tools\Apps\GPU_Monitor`, as
+a clone of the repo. Update it with `git pull`, not by copying files.
+
+- That machine has **no NVIDIA GPU** — a Radeon 8060S with a 96 GB UMA
+  carve-out — so it always runs the counter backend, and the
+  temperature/power/fan/clock rows never appear there. That is correct,
+  not a fault.
+- Autostart is on: the same `HKCU\...\Run` entry, written by
+  `monitor\autostart.py`.
+- The **Supervisor bridge is not installed there**, so the app logs a
+  warning at startup and cannot be inspected live. Copy
+  `C:\IA\Tools\Claude\Supervisor\bridge` over if that is ever needed —
+  ask Ivan first, it opens a localhost port on that box.
+- **An SSH shell is session 0.** A GUI launched from there gets an
+  invisible window station: the process runs and logs fine, but nothing
+  appears on the desktop. To put the card on his actual screen, create a
+  scheduled task with `/it` (interactive token), run it, delete it.
+
+## app_template is resolved, never hardcoded
+
+`monitor\template.py` finds it, in this order: `GPU_MONITOR_TEMPLATE`,
+then `C:\IA\Tools\Windows\Template`, then the bundled `vendor\`. Both the
+entry point and the test suite go through it — they each used to carry
+their own copy of that path, which is how the tests came to work on his
+machine and nowhere else.
+
+`vendor\app_template` is a **copy**, taken from the shared template. The
+shared one deliberately wins wherever it exists, so a fix to the template
+reaches this app without re-vendoring; refresh the copy (and commit it)
+when the template gains something this app needs.
