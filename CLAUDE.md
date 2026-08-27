@@ -589,10 +589,40 @@ difference. An SSH session gets the user's **full** token; a scheduled
 task with `/it`, like the card, gets the filtered one. Never conclude
 from an SSH probe that the app can read something.
 
-`svchost` is deliberately **not** in the set. It has the same problem and
-a different answer -- the services it hosts, which needs the SCM rather
-than a command line -- and it is protected anyway, so nothing can be done
-about it from here. Worth adding when asked; not worth guessing at.
+#### svchost: the same problem, the opposite treatment
+
+Added 2026-08-27 on Ivan's "quiero ver que servicios son". It is
+deliberately **not** in `GENERIC_HOSTS`, and it must not be: the shape of
+the data decides this, so measure before changing it. On chofostation
+svchost is **93 processes holding 1.9 GB, the biggest 82 MB and the
+median 15 MB** -- so splitting it per service the way python is split
+would put every single piece under the 512 MB threshold and the whole
+1.9 GB row would **vanish**. Strictly worse than the generic name.
+
+So the row stays whole and `_name_services()` fills its tooltip instead:
+the services inside it, biggest first, `MAX_SERVICES_LISTED` of them plus
+"and N more" -- never a silent truncation.
+
+- **`winproc.services_by_pid()`** is `OpenSCManagerW` +
+  `EnumServicesStatusExW(SC_ENUM_PROCESS_INFO)`: every running service
+  with the pid hosting it, one call, **9 ms**, and it needs only
+  `SC_MANAGER_ENUMERATE_SERVICE`, which ordinary users have. No
+  elevation, unlike everything in the section above.
+- **Display names, not keys.** "Windows Update" over "wuauserv": this is
+  for looking at.
+- **`_collect` keeps a `contrib` map** of (value, pid) per group, because
+  ranking the services needs the per-process figures that grouping throws
+  away. It is discarded as soon as the naming is done.
+- **One process, one service -> the service is the row**: `MsMpEng`
+  becomes *Microsoft Defender Antivirus Service (MsMpEng)*.
+- **Never rename a protected row.** `Entry.protected` reads the *name*,
+  so renaming `svchost` after one of its services would quietly make it
+  selectable and killable. There is a test for exactly this.
+- **The command line wins** where a row has both. A resolved generic host
+  says what it is running; the service note only fills an empty detail.
+- The panel had to change too: a protected row used to *replace* its
+  tooltip with "Windows needs this one", which would have thrown away the
+  one list that matters most. It appends now.
 
 ### Ending processes: what protects Ivan from this
 

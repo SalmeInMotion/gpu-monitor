@@ -419,9 +419,79 @@ check("the running image is found the same way",
 check("an unopenable pid has no image either",
       _wp.image_path(0) is None)
 
+print("\n-- svchost: which services is it --")
+# Not split per service the way python is: svchost is 93 processes here,
+# the biggest 82 MB, so every piece would fall under the 512 MB threshold
+# and the 1.9 GB row would vanish. The row stays whole and names its
+# contents on hover.
+_live = _wp.services_by_pid()
+check("the service table comes back keyed by pid",
+      isinstance(_live, dict)
+      and all(isinstance(k, int) for k in list(_live)[:5])
+      and all(isinstance(v, list) for v in list(_live.values())[:5]),
+      f"{len(_live)} processes host services")
+check("and it found some, since Windows always has services running",
+      len(_live) > 0, str(len(_live)))
+
+_real_services = bd.services_by_pid
+bd.services_by_pid = lambda: {
+    40: ["Microsoft Defender Antivirus Service"],
+    50: ["Windows Audio"], 51: ["Themes", "Plug and Play"],
+    52: ["State Repository Service"],
+}
+try:
+    srows = bd._collect(
+        {40: 700 * MB, 50: 800 * MB, 51: 600 * MB, 52: 900 * MB},
+        {40: "MsMpEng.exe", 50: "svchost.exe", 51: "svchost.exe",
+         52: "svchost.exe"},
+        bd.HIDE_BELOW_BYTES, bd.KIND_RAM)
+finally:
+    bd.services_by_pid = _real_services
+
+by_name = {e.name: e for e in srows}
+check("one process, one service: the service is the row",
+      "Microsoft Defender Antivirus Service (MsMpEng)" in by_name,
+      str(list(by_name)))
+# The safety property: Entry.protected reads the name, so renaming a
+# protected row would quietly make it selectable and killable.
+check("svchost is never renamed, whatever it hosts",
+      "svchost" in by_name and by_name["svchost"].protected)
+check("its services are listed biggest first",
+      by_name["svchost"].detail.splitlines()[0] == "900 MB  State Repository Service",
+      by_name["svchost"].detail.splitlines()[0])
+check("a process hosting several names them together",
+      "600 MB  Themes, Plug and Play" in by_name["svchost"].detail,
+      by_name["svchost"].detail)
+
+bd.services_by_pid = lambda: {n: [f"Service {n}"] for n in range(60, 70)}
+try:
+    many = bd._collect({n: 600 * MB for n in range(60, 70)},
+                       {n: "svchost.exe" for n in range(60, 70)})
+finally:
+    bd.services_by_pid = _real_services
+check("a long list is cut with a count, not silently",
+      many[0].detail.splitlines()[-1] == "and 4 more"
+      and len(many[0].detail.splitlines()) == bd.MAX_SERVICES_LISTED + 1,
+      many[0].detail.splitlines()[-1])
+
+# A generic host that resolved keeps its command line: the services note
+# must never overwrite something more specific.
+bd.services_by_pid = lambda: {70: ["Some Service"]}
+bd.describe = lambda pid, host: ("ComfyUI", "python.exe C:/ComfyUI/main.py")
+try:
+    both = bd._collect({70: 900 * MB}, {70: "python.exe"})
+finally:
+    bd.services_by_pid = _real_services
+    bd.describe = _real_describe
+check("a command line outranks a service note",
+      both[0].detail.startswith("python.exe"), both[0].detail)
+
 from monitor.processes import _elide
+from monitor.processes import TIP_CHARS
 check("a command line too long to hover over is cut",
-      len(_elide("x" * 900)) < 260 and _elide("x" * 900).endswith("\u2026"))
+      len(_elide("x" * 900)) == TIP_CHARS
+      and _elide("x" * 900).endswith("\u2026"),
+      str(len(_elide("x" * 900))))
 check("a short one is left alone", _elide("python app.py") == "python app.py")
 
 print("\n-- the process panel --")

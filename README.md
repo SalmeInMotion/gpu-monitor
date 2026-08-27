@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      214 offscreen checks, no window, no pytest
+tests/functional.py      222 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -159,6 +159,19 @@ ordinary process does not have over an **elevated** one -- and that was
 the very row this started with. `NtQueryInformationProcess` with
 `ProcessCommandLineInformation` answers on a limited-rights handle, which
 Windows does grant between processes of the same user.
+
+`svchost` has the same problem and needs the opposite treatment. It is
+93 processes here holding 1.9 GB, and the biggest of them is 82 MB -- so
+splitting it per service would push every piece under the 512 MB
+threshold and the row would disappear. It stays whole, and hovering lists
+the services inside it, biggest first, with a count of the ones that did
+not fit. The names come from the service control manager
+(`EnumServicesStatusEx`), which needs no elevation.
+
+Where a process hosts exactly **one** service, that service is the row:
+`MsMpEng` reads as *Microsoft Defender Antivirus Service*. Never for a
+protected name -- being protected is decided by the name, so renaming one
+would quietly make it selectable and killable.
 
 One thing it cannot do: read an **elevated** process. Same user is not
 enough -- an elevated process's security descriptor grants the

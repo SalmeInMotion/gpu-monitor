@@ -50,7 +50,7 @@ TITLES = {m.key: m.label for m in M.METRICS if m.breakdown}
 
 # A command line can run to two thousand characters -- Edge's renderers do
 # -- and a tooltip that tall covers the panel it belongs to.
-TIP_CHARS = 240
+TIP_CHARS = 420
 
 
 def _elide(text, limit=TIP_CHARS):
@@ -303,20 +303,24 @@ class ProcessPanel(QWidget):
             if len(entry.pids) > 1:
                 count = f"{len(entry.pids)} processes"
                 tip = f"{tip}\n\n{count}" if tip else count
-            if tip:
-                item.setToolTip(0, tip)
             if entry.protected:
                 # Listed, because it is genuinely using the memory, but
                 # not selectable: ending any of these takes Windows with
                 # it. ItemIsEnabled without ItemIsSelectable is the
                 # combination that still paints normally.
                 item.setFlags(Qt.ItemIsEnabled)
-                item.setToolTip(0, "Windows needs this one")
+                # Not instead of the detail: svchost is protected *and*
+                # the one row whose hover matters most, since the services
+                # inside it are the only thing that names it.
+                tip = f"{tip}\n\nWindows needs this one" if tip \
+                    else "Windows needs this one"
                 # A QSS :disabled rule would not fire: the item is enabled,
                 # just not selectable. Paint the difference directly.
                 muted = QBrush(QColor(self._muted))
                 item.setForeground(0, muted)
                 item.setForeground(1, muted)
+            if tip:
+                item.setToolTip(0, tip)
             self.list.addTopLevelItem(item)
             if entry.name in keep and not entry.protected:
                 item.setSelected(True)

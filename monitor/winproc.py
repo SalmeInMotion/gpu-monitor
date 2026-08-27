@@ -95,6 +95,21 @@ try:
 except (OSError, AttributeError):  # pragma: no cover - not Windows
     _kernel32 = _shell32 = None
 
+try:
+    _advapi32 = ctypes.WinDLL("advapi32.dll", use_last_error=True)
+    _advapi32.OpenSCManagerW.restype = wintypes.HANDLE
+    _advapi32.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                         wintypes.DWORD]
+    _advapi32.EnumServicesStatusExW.restype = wintypes.BOOL
+    _advapi32.EnumServicesStatusExW.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPCWSTR]
+    _advapi32.CloseServiceHandle.argtypes = [wintypes.HANDLE]
+except (OSError, AttributeError):  # pragma: no cover - not Windows
+    _advapi32 = None
+
 
 def snapshot():
     """[(pid, name, working_set_bytes, cpu_100ns), ...] or None.
@@ -261,6 +276,88 @@ def image_path(pid):
         return None
     finally:
         _kernel32.CloseHandle(handle)
+
+
+# --- which services live in which process --------------------------------
+#
+# "svchost" is as much a non-answer as "python", and it is 93 processes
+# holding 1.9 GB on this machine. The service control manager will say
+# who they are: EnumServicesStatusEx returns every running service with
+# the pid hosting it, in one call, and needs only
+# SC_MANAGER_ENUMERATE_SERVICE -- which ordinary users have.
+
+SC_MANAGER_ENUMERATE_SERVICE = 0x0004
+SC_ENUM_PROCESS_INFO = 0
+SERVICE_TYPE_ALL = 0x0000013F
+SERVICE_ACTIVE = 0x00000001
+ERROR_MORE_DATA = 234
+
+
+class SERVICE_STATUS_PROCESS(ctypes.Structure):
+    _fields_ = [("dwServiceType", wintypes.DWORD),
+                ("dwCurrentState", wintypes.DWORD),
+                ("dwControlsAccepted", wintypes.DWORD),
+                ("dwWin32ExitCode", wintypes.DWORD),
+                ("dwServiceSpecificExitCode", wintypes.DWORD),
+                ("dwCheckPoint", wintypes.DWORD),
+                ("dwWaitHint", wintypes.DWORD),
+                ("dwProcessId", wintypes.DWORD),
+                ("dwServiceFlags", wintypes.DWORD)]
+
+
+class ENUM_SERVICE_STATUS_PROCESS(ctypes.Structure):
+    _fields_ = [("lpServiceName", wintypes.LPWSTR),
+                ("lpDisplayName", wintypes.LPWSTR),
+                ("ServiceStatusProcess", SERVICE_STATUS_PROCESS)]
+
+
+def services_by_pid():
+    """{pid: [service display names]} for everything running, or {}.
+
+    Display names, not keys: "Windows Update" reads better on a row than
+    "wuauserv", and this is for looking at.
+    """
+    if _advapi32 is None:
+        return {}
+    manager = _advapi32.OpenSCManagerW(None, None,
+                                       SC_MANAGER_ENUMERATE_SERVICE)
+    if not manager:
+        return {}
+    try:
+        needed = wintypes.DWORD(0)
+        count = wintypes.DWORD(0)
+        resume = wintypes.DWORD(0)
+        # Ask with nothing to learn the size, as everywhere else here.
+        _advapi32.EnumServicesStatusExW(
+            manager, SC_ENUM_PROCESS_INFO, SERVICE_TYPE_ALL, SERVICE_ACTIVE,
+            None, 0, ctypes.byref(needed), ctypes.byref(count),
+            ctypes.byref(resume), None)
+        if not needed.value or needed.value > 1 << 24:
+            return {}
+        buffer = ctypes.create_string_buffer(needed.value)
+        ok = _advapi32.EnumServicesStatusExW(
+            manager, SC_ENUM_PROCESS_INFO, SERVICE_TYPE_ALL, SERVICE_ACTIVE,
+            buffer, needed.value, ctypes.byref(needed), ctypes.byref(count),
+            ctypes.byref(resume), None)
+        if not ok:
+            return {}
+        table = ctypes.cast(
+            buffer, ctypes.POINTER(ENUM_SERVICE_STATUS_PROCESS * count.value))
+        out = {}
+        for row in table.contents:
+            pid = row.ServiceStatusProcess.dwProcessId
+            if not pid:
+                continue            # a driver, or a service not running
+            out.setdefault(pid, []).append(
+                row.lpDisplayName or row.lpServiceName or "?")
+        for names in out.values():
+            names.sort(key=str.lower)
+        return out
+    except Exception as exc:            # pragma: no cover - shape change
+        log.debug("service table: %s", exc)
+        return {}
+    finally:
+        _advapi32.CloseServiceHandle(manager)
 
 
 def working_sets():

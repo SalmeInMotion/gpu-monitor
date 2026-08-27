@@ -27,8 +27,8 @@ try:
 except ImportError:  # pragma: no cover - depends on the machine
     psutil = None
 
-from .winproc import (command_line, denied, image_path, snapshot,
-                      working_sets)
+from .winproc import (command_line, denied, image_path,
+                      services_by_pid, snapshot, working_sets)
 
 # The metric keys from metrics.py; `Metric.breakdown` just says whether a
 # row has one, and the kind is the key itself.
@@ -292,11 +292,60 @@ def name_map():
     return out
 
 
-def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES):
+MAX_SERVICES_LISTED = 6
+
+
+def _name_services(entries, contrib, kind):
+    """Say which services a row is, for the rows that are services.
+
+    `svchost` is as generic as `python` and cannot be treated the same
+    way: it is 93 processes here, the biggest of them 82 MB, so splitting
+    it per service would put every piece under the 512 MB threshold and
+    the 1.9 GB row would vanish altogether. The row stays whole; what it
+    contains goes on the hover instead.
+    """
+    if not entries:
+        return
+    hosted = services_by_pid()
+    if not hosted:
+        return
+    for entry in entries:
+        rows = [(value, hosted.get(pid) or [])
+                for value, pid in contrib.get(entry.name, ())]
+        rows = [(value, names) for value, names in rows if names]
+        if not rows:
+            continue
+
+        distinct = {tuple(names) for _, names in rows}
+        alone = next(iter(distinct))
+        if (len(rows) == len(entry.pids) and len(distinct) == 1
+                and len(alone) == 1 and not entry.protected
+                and _tells_us_something(alone[0], entry.name)):
+            # Every process of this row is the same single service, so the
+            # service *is* the row: MsMpEng -> Microsoft Defender. Never
+            # for a protected name -- Entry.protected reads the name, and
+            # renaming one would quietly make it selectable.
+            entry.name = f"{alone[0]} ({entry.name})"
+            continue
+
+        rows.sort(key=lambda row: -row[0])
+        lines = [f"{fmt_value(kind, value)}  {', '.join(names)}"
+                 for value, names in rows[:MAX_SERVICES_LISTED]]
+        left = len(rows) - len(lines)
+        if left > 0:
+            lines.append(f"and {left} more")
+        if not entry.detail:
+            entry.detail = "\n".join(lines)
+
+
+def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES, kind=KIND_RAM):
     """{pid: value} -> the sorted, filtered, grouped-by-executable list."""
     if names is None:
         names = name_map()
     grouped = {}
+    # What each pid contributed, kept only until the services are named:
+    # ranking them needs the per-process figures the grouping throws away.
+    contrib = {}
     for pid, value in raw.items():
         if value <= 0:
             continue
@@ -330,8 +379,10 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES):
                 # A group can be part readable and part out of reach; the
                 # note must not depend on which pid came back first.
                 slot.detail = detail
+        contrib.setdefault(name, []).append((value, pid))
     entries = [e for e in grouped.values() if e.value >= threshold]
     entries.sort(key=lambda e: e.value, reverse=True)
+    _name_services(entries, contrib, kind)
     return entries
 
 
@@ -350,7 +401,7 @@ def ram_entries():
     if rows is not None:
         raw = {pid: ws for pid, _, ws in rows}
         names = {pid: name for pid, name, _ in rows}
-        return _collect(raw, names, HIDE_BELOW_BYTES)
+        return _collect(raw, names, HIDE_BELOW_BYTES, KIND_RAM)
 
     # Fallback for a Windows that no longer answers the NT call the same
     # way. Correct, just ~90x slower (1574 ms against 17 on this machine),
@@ -369,7 +420,7 @@ def ram_entries():
             names[pid] = proc.info["name"] or "?"
         except Exception:
             continue
-    return _collect(raw, names, HIDE_BELOW_BYTES)
+    return _collect(raw, names, HIDE_BELOW_BYTES, KIND_RAM)
 
 
 def vram_entries(pdh):
@@ -384,7 +435,7 @@ def vram_entries(pdh):
     """
     if pdh is None or not pdh.ok:
         return []
-    return _collect(pdh.per_process(), None, HIDE_BELOW_BYTES)
+    return _collect(pdh.per_process(), None, HIDE_BELOW_BYTES, KIND_VRAM)
 
 
 # --- usage ------------------------------------------------------------------
@@ -398,7 +449,8 @@ def gpu_entries(pdh):
     """
     if pdh is None or not pdh.ok:
         return []
-    return _collect(pdh.per_process_util(), None, HIDE_BELOW_PERCENT)
+    return _collect(pdh.per_process_util(), None, HIDE_BELOW_PERCENT,
+                    KIND_GPU)
 
 
 def cpu_sample():
@@ -439,7 +491,7 @@ def cpu_entries(before, after):
         used = ticks - was
         if used > 0:
             raw[pid] = used / span * 100.0
-    return _collect(raw, after[2], HIDE_BELOW_PERCENT)
+    return _collect(raw, after[2], HIDE_BELOW_PERCENT, KIND_CPU)
 
 
 # --- formatting -------------------------------------------------------------
