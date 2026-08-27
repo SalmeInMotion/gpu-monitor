@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      222 offscreen checks, no window, no pytest
+tests/functional.py      224 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -121,7 +121,7 @@ is what ia-usage itself does the moment you pick a custom accent.
 **Double-clicking the name** of `VRAM`, `RAM`, `GPU usage` or `CPU`
 opens a list of what is using it, biggest first, grouped per executable
 — one browser is fifty processes, and fifty identical rows answer
-nothing. Anything under the threshold is left out -- 512 MB on the two
+nothing. Anything under the threshold is left out -- 16 MB on the two
 memory rows, 5% on the two usage ones -- so the list never adds up to
 the bar: the rest is small fry plus, on VRAM, the driver's own
 allocations. The panel is titled with the exact name you double-clicked,
@@ -162,7 +162,7 @@ Windows does grant between processes of the same user.
 
 `svchost` has the same problem and needs the opposite treatment. It is
 93 processes here holding 1.9 GB, and the biggest of them is 82 MB -- so
-splitting it per service would push every piece under the 512 MB
+splitting it per service would push every piece under the memory
 threshold and the row would disappear. It stays whole, and hovering lists
 the services inside it, biggest first, with a count of the ones that did
 not fit. The names come from the service control manager

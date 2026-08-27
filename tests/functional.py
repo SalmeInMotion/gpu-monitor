@@ -208,19 +208,31 @@ from monitor import breakdown as bd
 from monitor.processes import ProcessPanel
 
 MB = 1024 * 1024
-fake = {10: 900 * MB, 11: 700 * MB, 12: 100 * MB, 13: 600 * MB, 14: 20 * MB}
+# Sized against the threshold rather than in absolute megabytes: it moved
+# once already (512 MB -> 16 MB) and these checks are about grouping, not
+# about what the cut happens to be this week.
+T = bd.HIDE_BELOW_BYTES
+fake = {10: int(1.5 * T), 11: int(1.2 * T), 12: int(0.2 * T),
+        13: int(1.1 * T), 14: int(0.03 * T)}
 fake_names = {10: "big.exe", 11: "big.exe", 12: "big.exe",
               13: "csrss.exe", 14: "tiny.exe"}
 rows = bd._collect(fake, fake_names)
 check("processes of one exe are grouped",
       [e.name for e in rows] == ["big", "csrss"], str([e.name for e in rows]))
 check("the group sums every instance, small ones included",
-      rows[0].value == 1700 * MB, str(rows[0].value // MB))
+      rows[0].value == fake[10] + fake[11] + fake[12], str(rows[0].value))
 check("it carries every pid it summed", sorted(rows[0].pids) == [10, 11, 12],
       str(rows[0].pids))
-check("under 512 MB never reaches the list",
+check("under the threshold never reaches the list",
       all(e.value >= bd.HIDE_BELOW_BYTES for e in rows) and "tiny" not in
       [e.name for e in rows])
+# A group whose own processes are each too small still counts: the cut is
+# per row, not per process. That is what keeps svchost's 93 tiny ones on
+# the list as 1.9 GB.
+smalls = bd._collect({i: int(0.2 * T) for i in range(80, 90)},
+                     {i: "many.exe" for i in range(80, 90)})
+check("small processes of one app add up to a row",
+      [e.name for e in smalls] == ["many"], str([e.name for e in smalls]))
 check("biggest first", [e.value for e in rows] == sorted(
       [e.value for e in rows], reverse=True))
 
@@ -255,8 +267,12 @@ check("bytes still format as bytes",
       bd.fmt_value(bd.KIND_VRAM, 2 * 1024 ** 3))
 check("each kind states its own threshold",
       (bd.fmt_threshold(bd.KIND_RAM), bd.fmt_threshold(bd.KIND_CPU))
-      == ("512 MB", "5%"),
+      == ("16 MB", "5%"),
       str((bd.fmt_threshold(bd.KIND_RAM), bd.fmt_threshold(bd.KIND_CPU))))
+# The two Ivan asked for by name on 2026-08-27, both invisible at 512 MB:
+# HoudiniLicenseServer is 21 MB and Claude's cowork-svc 27 MB.
+check("the cut is low enough for a small named service",
+      bd.HIDE_BELOW_BYTES <= 20 * MB, bd.fmt_threshold(bd.KIND_RAM))
 
 # CPU time is a running total: the percentage is the difference between
 # two readings over the wall time between them, divided by the cores.
@@ -522,8 +538,8 @@ check("an ordinary row selects", panel.list.topLevelItem(0).isSelected())
 check("End enables for it", panel.btn_end.isEnabled())
 check("End would only touch the unprotected pids",
       sorted(p for e in panel._selected_entries() for p in e.pids) == [10, 11, 12])
-check("the 512 MB rule is stated in the panel",
-      "512 MB" in panel.hint.text(), panel.hint.text())
+check("the panel states the cut it is applying",
+      bd.fmt_threshold(bd.KIND_RAM) in panel.hint.text(), panel.hint.text())
 panel.close()
 
 print("\n-- several panels at once --")

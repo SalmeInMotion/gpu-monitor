@@ -297,8 +297,9 @@ rather than a synonym of it. The label carries no layout stretch, so the
 target is exactly as wide as the text looks; `monitor\processes.py` is
 the panel, `monitor\breakdown.py` the data behind it, both grouped per
 executable, sorted descending, with everything under the kind's
-threshold left out -- Ivan's numbers, 512 MB and 5%, and the reason the
-panel's total never matches the bar.
+threshold left out -- Ivan's numbers, 16 MB and 5% (512 MB until
+2026-08-27, see below), and the reason the panel's total never matches
+the bar.
 
 Four things here are load-bearing, and three of them cost a measurement
 to find:
@@ -331,7 +332,7 @@ to find:
 
 ### The usage kinds: GPU and CPU, in percent
 
-Same panel, same gesture, threshold 5% instead of 512 MB (Ivan's numbers
+Same panel, same gesture, a percentage threshold instead of a size one (Ivan's numbers
 both times). `Metric.breakdown` is a plain bool now and **the kind is the
 metric's own key** — `vram`, `ram`, `gpu`, `cpu` — so there is one
 vocabulary, the panel titles itself from `Metric.label`, and adding a
@@ -589,6 +590,46 @@ difference. An SSH session gets the user's **full** token; a scheduled
 task with `/it`, like the card, gets the filtered one. Never conclude
 from an SSH probe that the app can read something.
 
+#### The memory threshold: 512 MB, then 16 MB
+
+2026-08-27, same afternoon, on "sesinetd y cowork-svc los quiero
+nombrados tambien, baja el umbral". Both are services Ivan wanted named,
+and both were simply **not on the list**: `HoudiniLicenseServer` is
+**21 MB** and Claude's `cowork-svc` **27 MB**, against a 512 MB cut.
+
+The measured cost of the change, so nobody has to re-measure it:
+
+| cut | rows in the RAM panel here |
+|---|---|
+| 512 MB | 18 |
+| 128 MB | 52 |
+| 32 MB | 89 |
+| **16 MB** | **113** |
+
+It reads as a big jump and is not, for one reason: **the list is sorted by
+size**, so the top of the panel is identical and the new rows are all
+below where the eye stops. `MAX_ROWS_SHOWN` was already 9, so it already
+scrolled.
+
+What the change bought is the point: **38 rows now name themselves**
+instead of a handful. The naming work is worth far more at 16 MB than at
+512, because a 25 MB process is exactly the kind you cannot identify by
+sight -- nobody wonders what a 5 GB `houdinifx` is.
+
+Two things to keep in mind if it moves again:
+
+- **The cut is per row, not per process.** svchost's 93 processes are
+  each 15-80 MB and the row is 1.9 GB. Lowering the cut does not split
+  anything; it only admits more *rows*.
+- **The tests size their fakes off `HIDE_BELOW_BYTES`**, not in absolute
+  megabytes, precisely so a future move does not break checks that are
+  about grouping. Keep them that way. Two exceptions on purpose: the
+  check that `fmt_threshold` says "16 MB", and the check that the cut is
+  low enough for a 21 MB service -- both are *about* the number.
+
+The usage threshold stays at **5%**: Ivan asked about two memory rows,
+and 0.5% would fill the CPU panel with everything that ever woke up.
+
 #### svchost: the same problem, the opposite treatment
 
 Added 2026-08-27 on Ivan's "quiero ver que servicios son". It is
@@ -596,7 +637,7 @@ deliberately **not** in `GENERIC_HOSTS`, and it must not be: the shape of
 the data decides this, so measure before changing it. On chofostation
 svchost is **93 processes holding 1.9 GB, the biggest 82 MB and the
 median 15 MB** -- so splitting it per service the way python is split
-would put every single piece under the 512 MB threshold and the whole
+would put every single piece under the memory threshold and the whole
 1.9 GB row would **vanish**. Strictly worse than the generic name.
 
 So the row stays whole and `_name_services()` fills its tooltip instead:

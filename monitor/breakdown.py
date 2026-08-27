@@ -6,9 +6,8 @@ to keep in step.
 
 Entries are grouped by executable, because one browser is fifty processes
 and a list of fifty "msedge.exe" rows answers nothing, and anything under
-the kind's threshold is left out: the question is "what do I close", and
-a 40 MB or 0.2% process is never the answer. Ivan set both thresholds —
-512 MB for the memory meters, 5% for the usage ones.
+the kind's threshold is left out. Ivan set both — 16 MB for the memory
+meters, 5% for the usage ones.
 
 No Qt in here on purpose — this runs on the sampler thread, where a walk
 of the process table cannot stutter the card.
@@ -40,7 +39,14 @@ KIND_CPU = "cpu"
 MEMORY_KINDS = frozenset({KIND_VRAM, KIND_RAM})
 USAGE_KINDS = frozenset({KIND_GPU, KIND_CPU})
 
-HIDE_BELOW_BYTES = 512 * 1024 * 1024
+# 512 MB to begin with -- "what do I close" has no interest in a 40 MB
+# process. Lowered to 16 MB on 2026-08-27, once the rows started naming
+# themselves: the answer to "which service is that" is worth having for
+# things far too small to be worth closing. HoudiniLicenseServer is 21 MB
+# and Claude's cowork-svc 27 MB, and both were invisible at 512.
+# It costs length -- 18 rows became 113 on this machine -- but the list is
+# sorted by size, so the top of it reads exactly as it did.
+HIDE_BELOW_BYTES = 16 * 1024 * 1024
 HIDE_BELOW_PERCENT = 5.0
 
 # Killing any of these takes Windows down with it, so they are listed but
@@ -300,7 +306,7 @@ def _name_services(entries, contrib, kind):
 
     `svchost` is as generic as `python` and cannot be treated the same
     way: it is 93 processes here, the biggest of them 82 MB, so splitting
-    it per service would put every piece under the 512 MB threshold and
+    it per service would put every piece under the memory threshold as
     the 1.9 GB row would vanish altogether. The row stays whole; what it
     contains goes on the hover instead.
     """

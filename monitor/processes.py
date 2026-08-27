@@ -2,7 +2,8 @@
 
 Answers one question — "what is holding this memory, and can I get it
 back" — so it is a list sorted by size, grouped per executable, with
-everything under 512 MB left out, and a button that ends what you pick.
+everything under the kind's threshold left out, and a button that ends
+what you pick.
 
 Wears the card's own skin (same tokens, same painted rounded rect and
 hand-drawn shadow) rather than a system window, because it belongs to the
