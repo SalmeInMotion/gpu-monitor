@@ -302,9 +302,13 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES):
             # Group by what it is running, not by the interpreter running
             # it, so two unrelated tools are two rows instead of one
             # meaningless total.
-            label, detail = describe(pid, name)
+            label, line = describe(pid, name)
             if label:
                 name = f"{label} ({name})"
+                # Only then: a row that stayed "powershell" is eleven
+                # different shells, and showing the first one's command
+                # line as though it were the group's is a half-truth.
+                detail = line
         slot = grouped.get(name)
         if slot is None:
             grouped[name] = Entry(name, value, [pid], detail)

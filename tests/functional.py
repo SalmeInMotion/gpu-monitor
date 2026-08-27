@@ -366,6 +366,10 @@ check("a host it cannot place keeps its plain name",
       hrows[-1].name == "python" and hrows[-1].pids == [32])
 check("the command line is carried for the tooltip",
       hrows[0].detail.endswith("--listen"), hrows[0].detail)
+# Live on the card: the unresolved "powershell" row was showing the first
+# of its eleven shells' command lines as though it spoke for the group.
+check("an unresolved row carries no command line",
+      hrows[-1].detail == "", hrows[-1].detail)
 check("nothing is asked about an app that already has a name",
       all(host == "python" for _, host in _asked)
       and 33 not in [pid for pid, _ in _asked])
