@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      205 offscreen checks, no window, no pytest
+tests/functional.py      210 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -152,6 +152,13 @@ read off its command line, which costs 0.03 ms per process -- and rows
 are grouped by that instead of by the executable. `ComfyUI (python)`,
 `after-effects-mcp (node)`, one row each. Hover for the full command
 line.
+
+The command line comes from the kernel, not from the process's own
+memory: `psutil` reads it out of the target's PEB, which needs rights an
+ordinary process does not have over an **elevated** one -- and that was
+the very row this started with. `NtQueryInformationProcess` with
+`ProcessCommandLineInformation` answers on a limited-rights handle, which
+Windows does grant between processes of the same user.
 
 `C:\ComfyUI\main.py` becomes *ComfyUI* rather than *main*, because half
 the projects in the world have a `main.py`; a script with a name of its

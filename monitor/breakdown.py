@@ -27,7 +27,7 @@ try:
 except ImportError:  # pragma: no cover - depends on the machine
     psutil = None
 
-from .winproc import snapshot, working_sets
+from .winproc import command_line, image_path, snapshot, working_sets
 
 # The metric keys from metrics.py; `Metric.breakdown` just says whether a
 # row has one, and the kind is the key itself.
@@ -222,15 +222,17 @@ def describe(pid, host):
     The label is None when nothing knowable says more than the executable
     already did, and the caller then leaves the row as it was.
     """
-    if psutil is None:
-        return None, ""
-    try:
-        proc = psutil.Process(pid)
-        argv = proc.cmdline()
-    except Exception:
-        # Gone, or one of Windows' own. Either way there is nothing to add.
-        return None, ""
+    # The kernel first: psutil reads the target's PEB, which an ordinary
+    # process may not do to an elevated one -- and that is exactly the
+    # case this feature exists for. See winproc.command_line.
+    argv = command_line(pid)
+    if not argv and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline()
+        except Exception:
+            argv = None
     if not argv:
+        # Gone, or a protected process. Either way there is nothing to add.
         return None, ""
     line = " ".join(argv)
 
@@ -254,10 +256,9 @@ def describe(pid, host):
     if target and target[1]:
         paths.append(target[1])
     paths.append(argv[0])
-    try:
-        paths.append(proc.exe())
-    except Exception:
-        pass
+    running = image_path(pid)
+    if running:
+        paths.append(running)
 
     for path in paths:
         if _is_the_systems_own(path):

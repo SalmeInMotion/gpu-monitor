@@ -374,6 +374,25 @@ check("nothing is asked about an app that already has a name",
       all(host == "python" for _, host in _asked)
       and 33 not in [pid for pid, _ in _asked])
 
+# The kernel, not the PEB: psutil could not read AI-cachofo's ComfyUI at
+# all (AccessDenied on an elevated process), which is precisely the row
+# this feature exists to name.
+from monitor import winproc as _wp
+_mine = _wp.command_line(_os.getpid())
+check("the command line comes back already split into argv",
+      isinstance(_mine, list) and len(_mine) >= 1
+      and "python" in _mine[0].lower(), str(_mine)[:80])
+check("it agrees with this process's own argv",
+      _mine[1:] == sys.argv or _mine[-1].endswith("functional.py"),
+      str(_mine[1:])[:80])
+check("a pid nobody can open answers None",
+      _wp.command_line(0) is None)
+check("the running image is found the same way",
+      (_wp.image_path(_os.getpid()) or "").lower().endswith(".exe"),
+      str(_wp.image_path(_os.getpid())))
+check("an unopenable pid has no image either",
+      _wp.image_path(0) is None)
+
 from monitor.processes import _elide
 check("a command line too long to hover over is cut",
       len(_elide("x" * 900)) < 260 and _elide("x" * 900).endswith("\u2026"))

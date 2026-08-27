@@ -71,8 +71,29 @@ try:
     _ntdll.NtQuerySystemInformation.argtypes = [
         ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
         ctypes.POINTER(ctypes.c_ulong)]
+    _ntdll.NtQueryInformationProcess.restype = ctypes.c_ulong
+    _ntdll.NtQueryInformationProcess.argtypes = [
+        wintypes.HANDLE, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong)]
 except (OSError, AttributeError):  # pragma: no cover - not Windows
     _ntdll = None
+
+try:
+    _kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                      wintypes.DWORD]
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    _kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD)]
+    _shell32 = ctypes.WinDLL("shell32.dll")
+    _shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    _shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR,
+                                            ctypes.POINTER(ctypes.c_int)]
+except (OSError, AttributeError):  # pragma: no cover - not Windows
+    _kernel32 = _shell32 = None
 
 
 def snapshot():
@@ -129,6 +150,97 @@ def snapshot():
             log.debug("process table chain ran past the buffer")
             return None
     return out or None
+
+
+# --- one process, with only the rights Windows gives away freely --------
+#
+# psutil reads a command line out of the target's PEB, which needs
+# PROCESS_VM_READ -- a right an ordinary process does not get over an
+# elevated one. That is not a corner case: it is how AI-cachofo's ComfyUI
+# runs, and the card there showed a bare "python" holding 30 GB while an
+# SSH shell (a full token) could read the same process perfectly.
+#
+# ProcessCommandLineInformation asks the kernel for the string instead, and
+# is satisfied by PROCESS_QUERY_LIMITED_INFORMATION -- which same-user
+# processes are granted across the elevation boundary. Windows 8.1+.
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_COMMAND_LINE_INFORMATION = 60
+
+
+def _open(pid):
+    if _kernel32 is None or not pid:
+        return None
+    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                   False, pid)
+    return handle or None
+
+
+def command_line(pid):
+    """The process's command line, already split into argv. None if the
+    system will not say -- protected processes still refuse."""
+    if _ntdll is None or _shell32 is None:
+        return None
+    handle = _open(pid)
+    if handle is None:
+        return None
+    try:
+        needed = ctypes.c_ulong(0)
+        # Ask with nothing: the answer is the length, as STATUS_INFO_
+        # LENGTH_MISMATCH. The string is variable-length, so there is no
+        # sensible size to guess.
+        _ntdll.NtQueryInformationProcess(
+            handle, PROCESS_COMMAND_LINE_INFORMATION, None, 0,
+            ctypes.byref(needed))
+        if not needed.value or needed.value > 1 << 20:
+            return None
+        buffer = ctypes.create_string_buffer(needed.value)
+        status = _ntdll.NtQueryInformationProcess(
+            handle, PROCESS_COMMAND_LINE_INFORMATION, buffer, needed.value,
+            ctypes.byref(needed))
+        if status:
+            return None
+        # A UNICODE_STRING whose Buffer points just past itself.
+        text = ctypes.cast(buffer, ctypes.POINTER(UNICODE_STRING)).contents
+        if not text.Length or not text.Buffer:
+            return None
+        line = ctypes.wstring_at(text.Buffer, text.Length // 2)
+    except Exception as exc:            # pragma: no cover - shape change
+        log.debug("command line for %s: %s", pid, exc)
+        return None
+    finally:
+        _kernel32.CloseHandle(handle)
+
+    count = ctypes.c_int(0)
+    argv = _shell32.CommandLineToArgvW(line, ctypes.byref(count))
+    if not argv:
+        return [line]                   # unquotable, but still the truth
+    try:
+        return [argv[i] for i in range(count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
+
+
+def image_path(pid):
+    """Where the running executable lives, or None.
+
+    QueryFullProcessImageNameW for the same reason as above: psutil's
+    `exe()` needs rights an elevated target does not hand over.
+    """
+    handle = _open(pid)
+    if handle is None:
+        return None
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not _kernel32.QueryFullProcessImageNameW(handle, 0, buffer,
+                                                    ctypes.byref(size)):
+            return None
+        return buffer.value or None
+    except Exception:                   # pragma: no cover
+        return None
+    finally:
+        _kernel32.CloseHandle(handle)
 
 
 def working_sets():
