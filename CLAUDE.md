@@ -493,6 +493,68 @@ plausible suspects and were genuinely fragile:
   is still the previous rect on Windows, so a stack laid out from it
   never settled.
 
+### "python" is not an answer: naming the generic hosts
+
+2026-08-27. Ivan, looking at the card on AI-cachofo: "en vram veo que el
+tragon es python con 30gb, pero eso es muy generico". It was ComfyUI --
+`C:\ComfyUI\main.py --listen 127.0.0.1 --port 8188` -- and on
+chofostation the same row was 13 GB across **51** unrelated processes.
+Grouping by executable is right for `chrome`; for an interpreter it
+merges everything the machine is doing into one useless total.
+
+So `breakdown.GENERIC_HOSTS` (python, pythonw, node, electron, java,
+powershell, cmd...) are grouped by **what they were told to run**, read
+off the command line by `describe(pid, host)`, and the row is named
+`ComfyUI (python)`. The host stays in parentheses on purpose: the name
+you recognise first, without lying about what the process is.
+
+- **The cost is nothing, and that was worth measuring first.**
+  `psutil.Process(pid).cmdline()` is a PEB read: **0.03 ms** per process,
+  2 ms for all 75 hosts on this machine, against `ram_entries()`'s 22 ms
+  total. That is why there is no cache -- and no cache means no eviction
+  bug when pids are recycled.
+- **Resolution happens inside `_collect`**, where the per-pid values
+  still exist. Doing it afterwards cannot work: an `Entry` has only the
+  *sum* and a list of pids, so there is no way to split it back apart.
+- **`_label_from_path` returns None rather than a shrug.** A relative
+  `main.py` yields nothing, and it has to say so, or `describe` never
+  reaches the next candidate -- the virtualenv path that says ComfyUI.
+
+Four candidates, in this order, each one paying for itself:
+
+1. **What the command line names** (`-m` module, `-jar`, or the first
+   bare argument).
+2. **`argv[0]`**, the interpreter as invoked. Not the same as (3):
+   ComfyUI Desktop is launched through the project's own `.venv` while
+   its real image lives in a shared `standalone-env`, which named the row
+   `standalone-env (python)` until argv[0] went in front of it.
+3. **`proc.exe()`**, for anything launched by absolute path.
+4. Nothing -- keep the plain host name.
+
+**Not the working directory.** It was in the list and it produced
+`Tools (powershell)` for an interactive shell sitting in `C:\IA\Tools`.
+An interactive shell is a shell; saying so is the honest answer, and the
+row is better off unchanged.
+
+Three traps already paid for, all found by running it against the real
+process table rather than by reasoning about it:
+
+- **`-c` is code, not a path.** Without `_INLINE_CODE`, the text of
+  `python -c "..."` was split on its slashes and a fragment of the
+  program became the row's name. `-X utf8` and `-cp <classpath>` are the
+  same shape and are in `_TAKES_SOMETHING_ELSE`.
+- **A label that repeats the host is not an answer.**
+  `WindowsPowerShell (powershell)` and `Python311 (python)` both came out
+  of a live machine. `_tells_us_something()` rejects any label containing
+  the host's name, plus bare version numbers like `v1.0`.
+- **`C:\Windows` names an installation, not a project**, so
+  `_is_the_systems_own()` skips those paths entirely.
+
+`svchost` is deliberately **not** in the set. It has the same problem and
+a different answer -- the services it hosts, which needs the SCM rather
+than a command line -- and it is protected anyway, so nothing can be done
+about it from here. Worth adding when asked; not worth guessing at.
+
 ### Ending processes: what protects Ivan from this
 
 - `breakdown.PROTECTED` is the list of names that are shown but never

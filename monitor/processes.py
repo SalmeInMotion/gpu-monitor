@@ -48,6 +48,15 @@ STACK_GAP = 8
 # as near-synonyms at a glance, which is the mix-up this must not invite.
 TITLES = {m.key: m.label for m in M.METRICS if m.breakdown}
 
+# A command line can run to two thousand characters -- Edge's renderers do
+# -- and a tooltip that tall covers the panel it belongs to.
+TIP_CHARS = 240
+
+
+def _elide(text, limit=TIP_CHARS):
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
 
 class ProcessPanel(QWidget):
     """A list of what is using one meter, and a way to end it.
@@ -290,8 +299,12 @@ class ProcessPanel(QWidget):
             item = QTreeWidgetItem(
                 [entry.name, bd.fmt_value(kind, entry.value)])
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+            tip = _elide(entry.detail)
             if len(entry.pids) > 1:
-                item.setToolTip(0, f"{len(entry.pids)} processes")
+                count = f"{len(entry.pids)} processes"
+                tip = f"{tip}\n\n{count}" if tip else count
+            if tip:
+                item.setToolTip(0, tip)
             if entry.protected:
                 # Listed, because it is genuinely using the memory, but
                 # not selectable: ending any of these takes Windows with

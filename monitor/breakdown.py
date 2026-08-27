@@ -72,12 +72,15 @@ class Entry:
     ones; `fmt_value` is what knows which.
     """
 
-    __slots__ = ("name", "value", "pids")
+    __slots__ = ("name", "value", "pids", "detail")
 
-    def __init__(self, name, value, pids):
+    def __init__(self, name, value, pids, detail=""):
         self.name = name
         self.value = value
         self.pids = list(pids)
+        # The full command line, for rows whose name had to be worked out
+        # rather than read off the executable. The panel shows it on hover.
+        self.detail = detail
 
     @property
     def protected(self):
@@ -90,6 +93,179 @@ class Entry:
 def _tidy(name):
     """"msedge.exe" -> "msedge". The extension is the same on every row."""
     return name[:-4] if name.lower().endswith(".exe") else name
+
+
+# --- what a generic host is actually running --------------------------------
+#
+# "python" answers nothing: it was 30 GB of video memory on AI-cachofo and
+# 51 unrelated processes on this machine. The executable is only a host;
+# what it was told to run is on its command line, one PEB read away
+# (measured: 0.03 ms per process, 2 ms for all 75 hosts here).
+
+# Interpreters and runtimes: their own name identifies nobody.
+GENERIC_HOSTS = frozenset({
+    "python", "pythonw", "py", "node", "electron", "deno", "bun",
+    "java", "javaw", "ruby", "perl", "php", "dotnet", "mono",
+    "powershell", "pwsh", "cmd", "wscript", "cscript",
+})
+
+# Script names every second project uses, so the folder above them is what
+# the thing is actually called: C:\ComfyUI\main.py is "ComfyUI".
+_ANONYMOUS_SCRIPTS = frozenset({
+    "main", "app", "run", "start", "server", "serve", "cli", "index",
+    "__main__", "manage", "setup", "service", "daemon", "bootstrap",
+    "launch", "init", "program", "entry", "wsgi", "asgi",
+})
+
+# Folders that are part of every layout and name no project either.
+_ANONYMOUS_DIRS = frozenset({
+    "bin", "src", "lib", "app", "dist", "build", "out", "scripts",
+    "script", "venv", ".venv", "env", ".env", "node_modules",
+    "site-packages", "tools", "backend", "frontend", "server", "code",
+    "current", "release", "debug",
+    # Windows' own plumbing, which is above half the paths on the machine
+    "windows", "system32", "syswow64", "program files",
+    "program files (x86)", "programdata", "users", "appdata", "local",
+    "locallow", "roaming", "programs", "temp",
+})
+
+# Flags whose next token is the thing being run.
+_TAKES_A_MODULE = frozenset({"-m"})
+_TAKES_A_PATH = frozenset({"-jar", "-file", "/c", "/k"})
+# Flags that carry an argument of their own, which must not be mistaken
+# for the script: `java -cp <classpath> com.foo.Main`.
+_TAKES_SOMETHING_ELSE = frozenset({"-cp", "-classpath", "--class-path",
+                                   "-x", "--user-data-dir"})
+# Flags followed by source code rather than a path. Without this, the text
+# of `python -c "..."` gets split on its slashes and a fragment of the
+# program becomes the row's name -- which is exactly what happened.
+_INLINE_CODE = frozenset({"-c", "-e", "--eval", "-command", "-encodedcommand",
+                          "-enc", "-ec"})
+
+_VERSIONISH = re.compile(r"[vV]?[\d._]+")
+_DRIVE = re.compile(r"[A-Za-z]:")
+_WINDOWS_DIR = (os.environ.get("SystemRoot") or "C:\\Windows").lower()
+
+
+def _target_of(argv):
+    """('module'|'path', what it runs) from a command line, or None.
+
+    argv[0] is the interpreter; the answer is the first bare argument, or
+    whatever a flag like -m or -jar introduces.
+    """
+    rest = argv[1:]
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        low = token.lower()
+        following = rest[i + 1] if i + 1 < len(rest) else None
+        if low in _TAKES_A_MODULE:
+            return ("module", following) if following else None
+        if low in _TAKES_A_PATH:
+            return ("path", following) if following else None
+        if low in _INLINE_CODE:
+            return None             # code, not a name; stop looking
+        if low in _TAKES_SOMETHING_ELSE:
+            i += 2
+            continue
+        if token.startswith("-") or token.startswith("/"):
+            i += 1                  # a flag we do not need to understand
+            continue
+        return ("path", token)
+    return None
+
+
+def _label_from_path(path):
+    """C:\\ComfyUI\\main.py -> ComfyUI, .../houdini-claude/tools/mcp_server.py
+    -> mcp_server. None when nothing along the path names anything.
+
+    Returning None rather than a shrug matters: the caller has other paths
+    to try, and a bare `main.py` must not stop it from reaching the
+    virtualenv that says ComfyUI.
+    """
+    parts = [p for p in re.split(r"[\\/]+", path) if p]
+    if not parts:
+        return None
+    stem = os.path.splitext(parts[-1])[0]
+    if stem and stem.lower() not in _ANONYMOUS_SCRIPTS \
+            and stem.lower() not in GENERIC_HOSTS:
+        return stem
+    for folder in reversed(parts[:-1]):
+        if _DRIVE.fullmatch(folder) or _VERSIONISH.fullmatch(folder):
+            continue
+        if folder.lower() in _ANONYMOUS_DIRS or folder.lower() in GENERIC_HOSTS:
+            continue
+        return folder
+    return None
+
+
+def _tells_us_something(label, host):
+    """Would this label be an answer, or just the question again?
+
+    "Python311 (python)" and "WindowsPowerShell (powershell)" are the two
+    that came out of a live machine: the host's own name, spelled longer.
+    """
+    if not label:
+        return False
+    return host.lower() not in label.lower() \
+        and not _VERSIONISH.fullmatch(label)
+
+
+def _is_the_systems_own(path):
+    """Under C:\\Windows, so it names an installation rather than a project."""
+    return bool(path) and path.lower().startswith(_WINDOWS_DIR)
+
+
+def describe(pid, host):
+    """(what this host is running, its full command line).
+
+    The label is None when nothing knowable says more than the executable
+    already did, and the caller then leaves the row as it was.
+    """
+    if psutil is None:
+        return None, ""
+    try:
+        proc = psutil.Process(pid)
+        argv = proc.cmdline()
+    except Exception:
+        # Gone, or one of Windows' own. Either way there is nothing to add.
+        return None, ""
+    if not argv:
+        return None, ""
+    line = " ".join(argv)
+
+    target = _target_of(argv)
+    if target and target[0] == "module" and target[1]:
+        # `-m hub`: the module *is* the name, and splitting it on dots
+        # would turn `http.server` into `http`.
+        module = target[1]
+        return (module if _tells_us_something(module, host) else None), line
+
+    # Best first: what it was told to run, then the interpreter it was
+    # invoked as, then the image actually running. A relative `main.py` is
+    # why the first is not enough alone, and the second is not the third:
+    # ComfyUI Desktop is launched through the project's own .venv but its
+    # real image lives in a shared `standalone-env` that names nobody.
+    #
+    # Deliberately not the working directory. An interactive shell in
+    # C:\IA\Tools is not "Tools" -- it is a shell, and saying so is the
+    # honest answer.
+    paths = []
+    if target and target[1]:
+        paths.append(target[1])
+    paths.append(argv[0])
+    try:
+        paths.append(proc.exe())
+    except Exception:
+        pass
+
+    for path in paths:
+        if _is_the_systems_own(path):
+            continue                # an installation path, not a project
+        label = _label_from_path(path)
+        if _tells_us_something(label, host):
+            return label, line
+    return None, line
 
 
 def name_map():
@@ -121,9 +297,17 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES):
         # is still real usage, so it goes in one bucket rather than being
         # dropped from a total the bar is showing.
         name = _tidy(raw_name) if raw_name else "(other)"
+        detail = ""
+        if name.lower() in GENERIC_HOSTS:
+            # Group by what it is running, not by the interpreter running
+            # it, so two unrelated tools are two rows instead of one
+            # meaningless total.
+            label, detail = describe(pid, name)
+            if label:
+                name = f"{label} ({name})"
         slot = grouped.get(name)
         if slot is None:
-            grouped[name] = Entry(name, value, [pid])
+            grouped[name] = Entry(name, value, [pid], detail)
         else:
             slot.value += value
             slot.pids.append(pid)

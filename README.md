@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      180 offscreen checks, no window, no pytest
+tests/functional.py      204 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -141,6 +141,23 @@ Pick one or more and **End process** closes them, after a confirmation
 naming what goes. Windows' own processes are listed, because they really
 are using the memory, but greyed and impossible to select: ending
 `csrss` or `dwm` takes the session with it.
+
+### "python" is not an answer
+
+An interpreter's own name identifies nobody: one row read `python, 30 GB`
+of video memory, and on the machine next to it `python` was fifty-one
+unrelated processes. So for `python`, `node`, `java`, `powershell` and
+the rest, the row is named after **what the process was told to run** --
+read off its command line, which costs 0.03 ms per process -- and rows
+are grouped by that instead of by the executable. `ComfyUI (python)`,
+`after-effects-mcp (node)`, one row each. Hover for the full command
+line.
+
+`C:\ComfyUI\main.py` becomes *ComfyUI* rather than *main*, because half
+the projects in the world have a `main.py`; a script with a name of its
+own keeps it. Where nothing says anything -- an interactive
+`powershell.exe` with no arguments -- the row stays as it was, which is
+the honest answer: it really is just a shell.
 
 Video memory per process comes from `GPU Process Memory\Local Usage` --
 not `Dedicated Usage`, which counts committed address space and reported

@@ -281,6 +281,100 @@ check("no baseline means no invented percentages",
 check("two readings at the same instant are refused",
       bd.cpu_entries((100.0, {}, {}), (100.0, {}, {})) == [])
 
+print("\n-- a generic host: what is it actually running --")
+# "python, 30 GB" was Ivan's complaint, and the answer -- ComfyUI -- was
+# sitting on the command line the whole time.
+check("the interpreters count as generic",
+      {"python", "pythonw", "node", "java", "powershell"} <= bd.GENERIC_HOSTS)
+check("an ordinary app does not",
+      not ({"houdinifx", "chrome", "svchost"} & bd.GENERIC_HOSTS))
+
+check("the script argument is what it runs",
+      bd._target_of(["python.exe", r"C:\ComfyUI\main.py", "--listen"])
+      == ("path", r"C:\ComfyUI\main.py"))
+check("flags before it are stepped over",
+      bd._target_of(["python.exe", "-u", "-X", "utf8", "app.py"])
+      == ("path", "app.py"))
+check("-m names a module, not a path",
+      bd._target_of(["python.exe", "-m", "http.server"]) == ("module",
+                                                             "http.server"))
+check("-jar is the java spelling of the same thing",
+      bd._target_of(["java.exe", "-Xmx4g", "-jar", r"C:\t\thing.jar"])
+      == ("path", r"C:\t\thing.jar"))
+check("a classpath is not mistaken for the script",
+      bd._target_of(["java.exe", "-cp", "a.jar;b.jar", "com.x.Main"])
+      == ("path", "com.x.Main"))
+# The one that bit: the text of -c was split on its slashes and a fragment
+# of the program became the row's name.
+check("inline code names nothing",
+      bd._target_of(["python.exe", "-c", "import os/x; print(1)"]) is None)
+check("a bare interpreter has no target",
+      bd._target_of(["python.exe"]) is None)
+
+check("the folder names the project when the script does not",
+      bd._label_from_path(r"C:\ComfyUI\main.py") == "ComfyUI")
+check("forward slashes read the same",
+      bd._label_from_path("C:/ComfyUI/main.py") == "ComfyUI")
+check("a script with a name of its own keeps it",
+      bd._label_from_path(r"C:\IA\houdini-claude\tools\mcp_server.py")
+      == "mcp_server")
+check("a virtualenv points at what it belongs to",
+      bd._label_from_path(r"C:\proj\.venv\Scripts\python.exe") == "proj")
+# None, not a shrug: describe() has other paths to try, and a relative
+# main.py must not stop it reaching the venv that says ComfyUI.
+check("a bare anonymous script answers nothing",
+      bd._label_from_path("main.py") is None)
+
+check("a label that just repeats the host is refused",
+      not bd._tells_us_something("WindowsPowerShell", "powershell")
+      and not bd._tells_us_something("Python311", "python"))
+check("so is a version number",
+      not bd._tells_us_something("v1.0", "powershell"))
+check("a real name is kept",
+      bd._tells_us_something("ComfyUI", "python"))
+check("Windows' own paths are not projects",
+      bd._is_the_systems_own(_os.environ.get("SystemRoot", r"C:\Windows")
+                             + r"\System32\WindowsPowerShell\powershell.exe")
+      and not bd._is_the_systems_own(r"C:\IA\Tools\x\python.exe"))
+
+# End to end: one interpreter, three processes, three different answers.
+_real_describe = bd.describe
+_asked = []
+
+
+def _stub_describe(pid, host):
+    _asked.append((pid, host))
+    return {30: ("ComfyUI", r"python.exe C:\ComfyUI\main.py --listen"),
+            31: ("voice_server", "python.exe scripts/voice_server.py"),
+            }.get(pid, (None, ""))
+
+
+bd.describe = _stub_describe
+try:
+    hrows = bd._collect({30: 900 * MB, 31: 700 * MB, 32: 600 * MB,
+                         33: 800 * MB},
+                        {30: "python.exe", 31: "python.exe",
+                         32: "python.exe", 33: "houdinifx.exe"})
+finally:
+    bd.describe = _real_describe
+
+check("one interpreter becomes one row per thing it is running",
+      [e.name for e in hrows] == ["ComfyUI (python)", "houdinifx",
+                                  "voice_server (python)", "python"],
+      str([e.name for e in hrows]))
+check("a host it cannot place keeps its plain name",
+      hrows[-1].name == "python" and hrows[-1].pids == [32])
+check("the command line is carried for the tooltip",
+      hrows[0].detail.endswith("--listen"), hrows[0].detail)
+check("nothing is asked about an app that already has a name",
+      all(host == "python" for _, host in _asked)
+      and 33 not in [pid for pid, _ in _asked])
+
+from monitor.processes import _elide
+check("a command line too long to hover over is cut",
+      len(_elide("x" * 900)) < 260 and _elide("x" * 900).endswith("\u2026"))
+check("a short one is left alone", _elide("python app.py") == "python app.py")
+
 print("\n-- the process panel --")
 panel = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
 panel.place_at(QPoint(560, 200), QPoint(200, 200))
