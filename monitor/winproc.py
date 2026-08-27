@@ -166,6 +166,26 @@ def snapshot():
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_COMMAND_LINE_INFORMATION = 60
+ERROR_ACCESS_DENIED = 5
+
+
+def denied(pid):
+    """True when Windows refuses even a limited handle.
+
+    Same user is not enough: an *elevated* process's DACL grants the
+    Administrators group, and an ordinary token carries that group as
+    deny-only, so nothing about it can be read. Measured on AI-cachofo,
+    where ComfyUI starts elevated -- and WMI is no way round it either,
+    `Win32_Process.CommandLine` comes back empty rather than refused.
+    """
+    if _kernel32 is None or not pid:
+        return False
+    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                   False, pid)
+    if handle:
+        _kernel32.CloseHandle(handle)
+        return False
+    return ctypes.get_last_error() == ERROR_ACCESS_DENIED
 
 
 def _open(pid):

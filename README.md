@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      210 offscreen checks, no window, no pytest
+tests/functional.py      214 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -159,6 +159,14 @@ ordinary process does not have over an **elevated** one -- and that was
 the very row this started with. `NtQueryInformationProcess` with
 `ProcessCommandLineInformation` answers on a limited-rights handle, which
 Windows does grant between processes of the same user.
+
+One thing it cannot do: read an **elevated** process. Same user is not
+enough -- an elevated process's security descriptor grants the
+Administrators group, which an ordinary token carries as deny-only, so
+Windows refuses even a limited handle. WMI is no way round it either
+(`Win32_Process.CommandLine` comes back empty rather than refused), and
+elevating a monitor to read one row is a bad trade. Those rows keep the
+host's name and say so on hover.
 
 `C:\ComfyUI\main.py` becomes *ComfyUI* rather than *main*, because half
 the projects in the world have a `main.py`; a script with a name of its

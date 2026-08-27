@@ -27,7 +27,8 @@ try:
 except ImportError:  # pragma: no cover - depends on the machine
     psutil = None
 
-from .winproc import command_line, image_path, snapshot, working_sets
+from .winproc import (command_line, denied, image_path, snapshot,
+                      working_sets)
 
 # The metric keys from metrics.py; `Metric.breakdown` just says whether a
 # row has one, and the kind is the key itself.
@@ -141,6 +142,12 @@ _TAKES_SOMETHING_ELSE = frozenset({"-cp", "-classpath", "--class-path",
 # program becomes the row's name -- which is exactly what happened.
 _INLINE_CODE = frozenset({"-c", "-e", "--eval", "-command", "-encodedcommand",
                           "-enc", "-ec"})
+
+# What a row says when it is allowed to see the process but not to ask
+# what it is doing -- an elevated one. Windows gives no way round it short
+# of elevating the monitor, which is a bad trade for a thing that watches.
+OUT_OF_REACH = ("Runs with more privilege than the monitor, so Windows "
+                "will not say what it is running.")
 
 _VERSIONISH = re.compile(r"[vV]?[\d._]+")
 _DRIVE = re.compile(r"[A-Za-z]:")
@@ -310,12 +317,19 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES):
                 # different shells, and showing the first one's command
                 # line as though it were the group's is a half-truth.
                 detail = line
+            elif denied(pid):
+                # Not a shrug: the row can say why it has nothing to say.
+                detail = OUT_OF_REACH
         slot = grouped.get(name)
         if slot is None:
             grouped[name] = Entry(name, value, [pid], detail)
         else:
             slot.value += value
             slot.pids.append(pid)
+            if detail and not slot.detail:
+                # A group can be part readable and part out of reach; the
+                # note must not depend on which pid came back first.
+                slot.detail = detail
     entries = [e for e in grouped.values() if e.value >= threshold]
     entries.sort(key=lambda e: e.value, reverse=True)
     return entries

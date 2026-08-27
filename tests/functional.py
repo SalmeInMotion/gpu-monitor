@@ -368,6 +368,32 @@ check("the command line is carried for the tooltip",
       hrows[0].detail.endswith("--listen"), hrows[0].detail)
 # Live on the card: the unresolved "powershell" row was showing the first
 # of its eleven shells' command lines as though it spoke for the group.
+# AI-cachofo's ComfyUI runs elevated, and an ordinary token cannot open
+# it even for a limited read -- WMI answers with an empty command line
+# rather than an error, so there is no way round it. The row says why it
+# has nothing to say instead of staying silently generic.
+check("a pid nobody can open is not reported as denied",
+      bd.denied(0) is False)
+check("our own process is not denied either",
+      bd.denied(_os.getpid()) is False)
+
+_real_denied = bd.denied
+bd.describe = lambda pid, host: (None, "")
+bd.denied = lambda pid: pid == 32
+try:
+    drows = bd._collect({30: 900 * MB, 32: 600 * MB},
+                        {30: "python.exe", 32: "python.exe"})
+finally:
+    bd.denied = _real_denied
+    bd.describe = _real_describe
+check("a row it may not look into says why",
+      len(drows) == 1 and drows[0].name == "python"
+      and drows[0].detail == bd.OUT_OF_REACH, str(drows) + drows[0].detail)
+# The readable pid came first: without adopting the note on merge, the
+# group's explanation would depend on dictionary order.
+check("the note survives being merged into an existing group",
+      drows[0].pids == [30, 32], str(drows[0].pids))
+
 check("an unresolved row carries no command line",
       hrows[-1].detail == "", hrows[-1].detail)
 check("nothing is asked about an app that already has a name",
