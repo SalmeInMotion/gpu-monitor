@@ -73,6 +73,19 @@ def settle(n=4):
         ctx.app.processEvents()
 
 
+def settle_ms(ms=90):
+    """Pump for real time, not just a few passes.
+
+    The stack is re-laid on a 16ms timer -- deliberately not a 0ms one,
+    which is a busy loop wearing a Qt logo -- so anything that waits on a
+    re-flow has to let the clock move.
+    """
+    import time as _t
+    end = _t.monotonic() + ms / 1000.0
+    while _t.monotonic() < end:
+        ctx.app.processEvents()
+
+
 print("\n-- data --")
 ov.on_sample(SAMPLE)
 settle()
@@ -270,7 +283,8 @@ check("two readings at the same instant are refused",
 
 print("\n-- the process panel --")
 panel = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
-panel.open_at(QRect(200, 200, 312, 494))
+panel.place_at(QPoint(560, 200), QPoint(200, 200))
+panel.open_at()
 settle()
 panel.set_entries(bd.KIND_RAM, rows)
 settle()
@@ -304,19 +318,19 @@ ov._pointer_held = lambda: False
 ov.move(20, 20)
 for key in list(ov._panels):
     ov._panels[key].close()
-settle()
+settle_ms()
 
 ov.show_breakdown(bd.KIND_RAM)
-settle()
+settle_ms()
 check("plain opens one", set(ov._panels) == {bd.KIND_RAM}, str(set(ov._panels)))
 
 ov.show_breakdown(bd.KIND_CPU)
-settle()
+settle_ms()
 check("plain replaces it rather than adding",
       set(ov._panels) == {bd.KIND_CPU}, str(set(ov._panels)))
 
 ov.show_breakdown(bd.KIND_RAM, additive=True)
-settle()
+settle_ms()
 check("Shift adds to what is open",
       set(ov._panels) == {bd.KIND_CPU, bd.KIND_RAM}, str(set(ov._panels)))
 from monitor.processes import GUTTER as _GUT, STACK_GAP as _GAP
@@ -343,13 +357,13 @@ check("with exactly the gap the constant says",
 # screen is the behaviour that wins there.
 tops = {k: p.y() for k, p in ov._panels.items()}
 ov.move(ov.x(), ov.y() + 15)
-settle()
+settle_ms()
 check("the whole stack follows the master card",
       all(p.y() == tops[k] + 15 for k, p in ov._panels.items()),
       str({k: (tops[k], p.y()) for k, p in ov._panels.items()}))
 
 ov.show_breakdown(bd.KIND_GPU, additive=True)
-settle()
+settle_ms()
 check("Shift again makes three", len(ov._panels) == 3, str(set(ov._panels)))
 third = ov._panels[bd.KIND_GPU]
 # On this 800x800 offscreen screen a third panel cannot fit under the
@@ -382,7 +396,7 @@ check("and it is the one the constant names",
 # growing the top panel must push the ones under it, not overlap them
 before_tops = [p.y() for p in ov._stacked_panels()[1:]]
 stacked[0].setFixedHeight(stacked[0].height() + 60)
-settle()
+settle_ms()
 after = ov._stacked_panels()
 regaps = column_gaps(after)
 check("a panel growing re-lays the ones below it",
@@ -394,18 +408,148 @@ stacked[0].setMinimumHeight(0)
 stacked[0].setMaximumHeight(16777215)
 
 ov.show_breakdown(bd.KIND_RAM, additive=True)
-settle()
+settle_ms()
 check("Shift on an open one takes it back out",
       set(ov._panels) == {bd.KIND_CPU, bd.KIND_GPU}, str(set(ov._panels)))
 
 ov.show_breakdown(bd.KIND_CPU)
-settle()
+settle_ms()
 check("a plain double-click collapses the stack to that one",
       set(ov._panels) == {bd.KIND_CPU}, str(set(ov._panels)))
 
 ov.show_breakdown(bd.KIND_CPU)
-settle()
+settle_ms()
 check("and closes the last one", ov._panels == {}, str(set(ov._panels)))
+del ov._pointer_held
+ov._save_timer.stop()
+
+print("\n-- the stack cannot chase its own tail --")
+# What trapped Ivan: a panel resize asked for a re-flow, the re-flow moved
+# the panel, and on his mixed-DPI desktop a move across a monitor edge
+# made Qt resize the window again. One core pinned, and the app too busy
+# to answer WM_CLOSE on its own Preferences dialog.
+ov._pointer_held = lambda: False
+for key in list(ov._panels):
+    ov._panels[key].close()
+settle_ms()
+ov.show_breakdown(bd.KIND_RAM)
+ov.show_breakdown(bd.KIND_CPU, additive=True)
+settle_ms()
+
+check("re-flow is deferred and rate-limited",
+      ov._reflow_timer.isSingleShot() and ov._reflow_timer.interval() >= 16,
+      f"single-shot={ov._reflow_timer.isSingleShot()} "
+      f"interval={ov._reflow_timer.interval()}ms")
+
+reflows = {"n": 0}
+real_do = ov._do_reflow
+
+
+def counted_do():
+    reflows["n"] += 1
+    return real_do()
+
+
+ov._do_reflow = counted_do
+# a burst of requests must collapse into a single lay-out
+for _ in range(25):
+    ov._reflow_stack()
+settle_ms(120)
+check("a burst of requests collapses into one pass", reflows["n"] == 1,
+      str(reflows["n"]))
+
+# and a request raised *during* a lay-out is refused outright
+ov._reflowing = True
+reflows["n"] = 0
+ov._reflow_stack()
+settle_ms()
+check("a re-flow asked for mid-lay-out is dropped", reflows["n"] == 0,
+      str(reflows["n"]))
+ov._reflowing = False
+ov._do_reflow = real_do
+
+# the no-op move is the other half: a move that changes nothing must not
+# reach Qt, because on a DPI boundary even that can trigger a resize
+panel = ov._panels[bd.KIND_RAM]
+moves = {"n": 0}
+real_move = panel.move
+
+
+def counted_move(*args):
+    moves["n"] += 1
+    return real_move(*args)
+
+
+panel.move = counted_move
+here = panel.pos()
+panel._move_to(here)
+check("moving a panel where it already is does nothing", moves["n"] == 0,
+      str(moves["n"]))
+panel._move_to(QPoint(here.x() + 5, here.y()))
+check("...but a real move still goes through", moves["n"] == 1, str(moves["n"]))
+panel.move = real_move
+
+print("\n-- the selection guard does not ping-pong --")
+# The one that actually trapped Ivan. _sync_button schedules a 0ms
+# clean-up, and the clean-up used to call _sync_button back with the
+# guard flag already reset -- so the two re-armed each other forever.
+# One core per open panel, no Python event to show for it, and an app too
+# busy to answer WM_CLOSE on its own Preferences dialog.
+loop_panel = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
+loop_panel.show()
+loop_panel.set_entries(bd.KIND_RAM, rows)
+settle_ms(60)
+
+drops = {"n": 0}
+_real_drop = ProcessPanel._drop_protected_selection
+
+
+def counted_drop(self):
+    drops["n"] += 1
+    return _real_drop(self)
+
+
+ProcessPanel._drop_protected_selection = counted_drop
+loop_panel._sync_button()
+settle_ms(250)
+ProcessPanel._drop_protected_selection = _real_drop
+check("one sync settles in a couple of passes, not hundreds",
+      drops["n"] <= 3, f"{drops['n']} clean-up passes in 250ms")
+
+# and it still does its job: a protected row must not stay highlighted
+protected_row = None
+for i in range(loop_panel.list.topLevelItemCount()):
+    if not (loop_panel.list.topLevelItem(i).flags() & Qt.ItemIsSelectable):
+        protected_row = loop_panel.list.topLevelItem(i)
+        break
+check("the list has a protected row to try", protected_row is not None)
+if protected_row is not None:
+    protected_row.setSelected(True)
+    settle_ms(120)
+    check("selecting it from code still does not stick",
+          not protected_row.isSelected())
+loop_panel.close()
+settle()
+
+print("\n-- a modal dialog is never buried --")
+# Preferences is modal. Four always-on-top panels over it is a dialog
+# nobody can answer, which is the other half of what happened.
+check("panels start in the topmost band",
+      all(bool(p.windowFlags() & Qt.WindowStaysOnTopHint)
+          for p in ov._panels.values()))
+ov.suspend_topmost()
+settle()
+check("suspending the card takes the panels down too",
+      not any(bool(p.windowFlags() & Qt.WindowStaysOnTopHint)
+              for p in ov._panels.values()))
+ov.apply_always_on_top()
+settle()
+check("and closing the dialog puts them back",
+      all(bool(p.windowFlags() & Qt.WindowStaysOnTopHint)
+          for p in ov._panels.values()))
+for key in list(ov._panels):
+    ov._panels[key].close()
+settle()
 del ov._pointer_held
 ov._save_timer.stop()
 
@@ -421,14 +565,14 @@ print("\n-- the panel is a satellite of the card --")
 ov._pointer_held = lambda: False
 ov.move(20, 20)
 ov.show_breakdown(bd.KIND_RAM)
-settle()
+settle_ms()
 sat = ov._panels[bd.KIND_RAM]
 check("the card owns a panel once opened", sat is not None and sat.isVisible())
 check("it has a close button of its own", sat.btn_close.isVisible())
 first = sat.pos()
 
 ov.move(ov.x() + 40, ov.y() + 30)
-settle()
+settle_ms()
 check("moving the card takes it along",
       sat.pos() == first + QPoint(40, 30),
       f"{sat.pos()} vs {first + QPoint(40, 30)}")
@@ -444,10 +588,10 @@ _QApp.sendEvent(sat, _QME(_QME.Type.MouseButtonPress, _c,
                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
 check("a press on the panel takes it out of the stack", not sat.stacked)
 sat.move(sat.x() - 60, sat.y() + 20)
-settle()
+settle_ms()
 moved = sat.pos()
 ov.move(ov.x() + 25, ov.y())
-settle()
+settle_ms()
 check("a hand-placed panel keeps its new offset",
       sat.pos() == moved + QPoint(25, 0), f"{sat.pos()} vs {moved + QPoint(25, 0)}")
 
@@ -460,13 +604,13 @@ ov.apply_theme()
 check("...and follows it back to opaque", sat._fill.alpha() == 255)
 
 ov.show_breakdown(bd.KIND_RAM)
-settle()
+settle_ms()
 check("the same word again closes it", bd.KIND_RAM not in ov._panels)
 ov.show_breakdown(bd.KIND_RAM)
-settle()
+settle_ms()
 check("and opens it again", bd.KIND_RAM in ov._panels)
 ov._panels[bd.KIND_RAM].btn_close.click()
-settle()
+settle_ms()
 check("the close button closes it", bd.KIND_RAM not in ov._panels)
 del ov._pointer_held
 ov._save_timer.stop()
@@ -668,6 +812,16 @@ class _FakeGuiApp:
     @staticmethod
     def primaryScreen():  # noqa: N802 - Qt naming
         return _FakeGuiApp.screens()[0]
+
+    @staticmethod
+    def screenAt(point):        # noqa: N802 - mirrors Qt's name
+        """_do_reflow asks for the screen under the card. Without this the
+        fake raised AttributeError inside a Qt slot, where it is printed
+        and swallowed rather than failing a check."""
+        for screen in _FakeGuiApp.screens():
+            if screen.geometry().contains(point):
+                return screen
+        return None
 
 
 _real_gui_app = _OV.QGuiApplication

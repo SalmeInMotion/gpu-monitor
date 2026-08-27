@@ -33,7 +33,7 @@ from .chrome import (ChromeButton, GLYPH_CLOSE, GLYPH_COMPACT,
                      GLYPH_TOP, GLYPH_UNPIN, chrome_qss)
 from .meter import (CASCADE_STEP_MS, MeterRow, SectionHeader, flat_gradient,
                     ramp_colors)
-from .processes import ProcessPanel
+from .processes import GUTTER as PANEL_GUTTER, STACK_GAP, ProcessPanel
 
 log = logging.getLogger("gpu_monitor.overlay")
 
@@ -160,6 +160,7 @@ class Overlay(QWidget):
         self._shown_groups = []
         self._panels = {}
         self._stack_order = []
+        self._reflowing = False
         self._user_moved = False
         self._centre_pending = False
         self._last_fit_height = -1
@@ -192,6 +193,21 @@ class Overlay(QWidget):
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(0)
         self._fit_timer.timeout.connect(self._fit)
+
+        # Coalesces a burst of panel resizes into one lay-out. See
+        # _reflow_stack for why doing it synchronously is a trap.
+        self._reflow_timer = QTimer(self)
+        self._reflow_timer.setSingleShot(True)
+        # Not 0: a zero-delay timer that keeps being re-armed is a busy
+        # loop with a Qt logo on it. At 16ms a pathological cycle costs
+        # 60 passes a second instead of a whole core, which is the
+        # difference between a glitch and an app that cannot answer its
+        # own Preferences dialog.
+        self._reflow_timer.setInterval(16)
+        self._reflow_timer.timeout.connect(self._do_reflow)
+        # What the last pass actually applied. A pass that computes the
+        # same thing again touches nothing, so nothing can re-trigger it.
+        self._last_layout = None
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -839,6 +855,9 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
             self._reassert_topmost()   # goes through the own-UI guard
         else:
             self._set_topmost(False)
+        # The panels came down with the card in suspend_topmost; this is
+        # the path that runs once the dialog closes, so they go back up.
+        self.restore_panel_topmost()
         self.btn_top.blockSignals(True)
         self.btn_top.setChecked(on)
         self.btn_top.blockSignals(False)
@@ -868,8 +887,19 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
     def suspend_topmost(self):
         """Drop the card out of the topmost band while a modal dialog of
         ours is open, so it cannot cover the dialog. apply_always_on_top()
-        — called from apply_live once the dialog closes — restores it."""
+        — called from apply_live once the dialog closes — restores it.
+
+        The breakdown panels are topmost in their own right, so they come
+        down too: Preferences is modal, and a dialog buried under four
+        always-on-top panels is one nobody can answer.
+        """
         self._set_topmost(False)
+        for panel in self._panels.values():
+            panel.set_topmost(False)
+
+    def restore_panel_topmost(self):
+        for panel in self._panels.values():
+            panel.set_topmost(True)
 
     def raise_to_front(self):
         """Surface the card in front of everything — the answer to a second
@@ -960,42 +990,118 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
         panel = ProcessPanel(self.theme, self.settings, kind)
         panel.refresh_requested.connect(self.breakdown_requested)
         panel.closed.connect(self._forget_panel)
-        panel.resized.connect(lambda _k: self._reflow_stack())
+        # Only a visible panel's size means anything to the stack. A
+        # hidden one still emits resizes as Qt settles its layout, and
+        # answering those is free CPU spent on a window nobody sees.
+        panel.resized.connect(
+            lambda _k, p=panel: self._reflow_stack() if p.isVisible() else None)
         self._panels[kind] = panel
+        self._last_layout = None
         if kind not in self._stack_order:
             self._stack_order.append(kind)
-        panel.open_at(self.frameGeometry(), self._last_stacked_rect())
-        self._reflow_stack()
+        # Laid out before it is shown, so it never appears at a default
+        # spot and jump to its slot.
+        self._do_reflow()
+        panel.open_at()
 
     def _stacked_panels(self):
         """The panels the overlay still lays out, in the order they were
-        opened. One the user has dragged is not among them."""
+        opened. One the user has dragged is not among them.
+
+        Deliberately not filtered on isVisible(): a panel is laid out
+        before it is shown, so it never flashes at a default position
+        first.
+        """
         out = []
         for kind in self._stack_order:
             panel = self._panels.get(kind)
-            if panel is not None and panel.stacked and panel.isVisible():
+            if panel is not None and panel.stacked:
                 out.append(panel)
         return out
 
-    def _last_stacked_rect(self):
-        stacked = self._stacked_panels()
-        return stacked[-1].frameGeometry() if stacked else None
-
     def _reflow_stack(self):
+        """Ask for the stack to be re-laid, on the next turn of the loop.
+
+        Deferred and re-entrancy-guarded, both to break a feedback loop
+        that pinned a core and left the app deaf to WM_CLOSE: a panel
+        resize triggers a re-flow, the re-flow moves the panel, and on
+        Ivan's mixed-DPI screens a move across a monitor boundary makes
+        Qt *resize* the window -- which triggers the next re-flow. It only
+        showed up on the real desktop; offscreen there are no monitors to
+        cross and nothing spun.
+        """
+        if self._reflowing:
+            return
+        self._reflow_timer.start()
+
+    def _do_reflow(self):
         """Re-lay the stack under the card.
 
         Run on every panel resize, not once at open: a panel is short
         while it says "Reading..." and grows when its rows land, so a
         position computed at open time left three different gaps. Panels
         the user has dragged out keep their own offset and are skipped.
+
+        Every slot is computed from the panels' own heights, and nothing
+        reads a position back. Asking a panel for its frameGeometry()
+        immediately after moving it returns the *previous* rect on
+        Windows, so a layout derived from it never settled: each pass
+        disagreed with the last, the disagreement moved a window, the
+        move resized it across a DPI boundary, and that asked for another
+        pass. One core, forever.
         """
-        rect = self.frameGeometry()
-        below = None
-        for panel in self._stacked_panels():
-            panel.place_in_stack(rect, below)
-            below = panel.frameGeometry()
+        panels = self._stacked_panels()
+        if not panels:
+            return
+        self._reflowing = True
+        try:
+            anchor = self.frameGeometry()
+            screen = (QGuiApplication.screenAt(anchor.center())
+                      or QGuiApplication.primaryScreen())
+            area = screen.availableGeometry()
+            width = panels[0].width()
+            step_x = width - 2 * PANEL_GUTTER + STACK_GAP
+
+            # beside the card, flipping to its left if there is no room
+            x = anchor.right() + 1 - 2 * PANEL_GUTTER + STACK_GAP
+            if x + width - 1 > area.right():
+                x = anchor.left() + 2 * PANEL_GUTTER - STACK_GAP - width
+            x = max(area.left(), min(x, area.right() - width + 1))
+
+            top = max(area.top(), min(anchor.top(), area.bottom()))
+            y = top
+            plan = []
+            for panel in panels:
+                # A panel is laid out before it is shown, and until then
+                # height() is Qt's default, not the size it will take --
+                # which made the second panel of a stack believe it did
+                # not fit and start a new column.
+                height = (panel.height() if panel.isVisible()
+                          else panel.sizeHint().height())
+                if y > top and y + height - 1 > area.bottom():
+                    x = min(x + step_x, area.right() - width + 1)
+                    x = max(area.left(), x)
+                    y = top
+                place_y = max(area.top(),
+                              min(y, area.bottom() - height + 1))
+                plan.append((panel, QPoint(x, place_y), height))
+                y += height - 2 * PANEL_GUTTER + STACK_GAP
+
+            # Idempotence is the safety net, not an optimisation. Any
+            # feedback -- a move that provokes a resize, a resize that
+            # asks for another pass -- dies here the moment two passes
+            # agree, because the second one moves nothing at all.
+            signature = [(id(pn), pt.x(), pt.y(), h) for pn, pt, h in plan]
+            if signature == self._last_layout:
+                return
+            self._last_layout = signature
+            for panel, point, _height in plan:
+                panel.place_at(point, anchor.topLeft())
+        finally:
+            self._reflowing = False
 
     def _forget_panel(self, kind):
+        self._last_layout = None      # the plan it described no longer exists
         panel = self._panels.pop(kind, None)
         if kind in self._stack_order:
             self._stack_order.remove(kind)

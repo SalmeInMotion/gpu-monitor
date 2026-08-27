@@ -383,7 +383,9 @@ time.
   can forget it; nothing else removes entries, so closing by X, by
   gesture or by the card shutting down all take the same path.
 - **The stack is re-laid, not placed once.** `Overlay._reflow_stack()`
-  runs on every panel `resized`, on open, on close and on a card move.
+  runs on every *visible* panel's `resized`, on open, on close and on a
+  card move -- deferred through a 16ms timer and idempotent, see the
+  ping-pong section below.
   Placing each panel once at open time is what gave Ivan three different
   gaps: a panel is short while it says "Reading..." and grows when its
   rows land, so whatever was under it kept the spacing of a size that no
@@ -435,6 +437,61 @@ things answer that, and the first two are easy to undo by accident:
 Double-clicking the same word again closes it -- that always worked, and
 Ivan still could not find it, hence the **X button**. Both stay: the
 toggle for whoever knows, the X for whoever does not.
+
+### The 0ms ping-pong: one core per open panel
+
+2026-08-27. Symptom: with any breakdown panel open the app pinned one
+core (measured 84-106%), and once Preferences was open it would not
+close — not by its buttons, not by `WM_CLOSE`. Ivan was stuck with a
+modal dialog he could not answer.
+
+Cause, and it is two lines: `_sync_button` scheduled
+`_drop_protected_selection` on a `QTimer.singleShot(0, ...)`, and that
+clean-up ended by calling `_sync_button` back — with `_clearing` already
+reset in its `finally`. Each re-armed the other, forever, at zero delay.
+
+The fix that matters is the **early return**: `_drop_protected_selection`
+now does nothing and calls nobody when there is no stuck row. The
+scheduling stays unconditional, and has to: during
+`itemSelectionChanged` Qt has not yet marked the row as selected, so
+asking "is there anything to clean?" at that moment always answers no and
+the row stays highlighted. Chain length is now at most
+sync → drop → sync → drop(nothing) → stop.
+
+**Why it took so long to find, so the next session does not repeat it:**
+
+- **Instance-level wrappers do not intercept anything Qt calls.**
+  `panel.paintEvent = wrapper` never fires: PySide resolves virtuals on
+  the *class*. And `timer.timeout.connect(self._do_reflow)` captures the
+  bound method at connect time, so `ov._do_reflow = wrapper` misses every
+  call too. Both made the app look idle while it burned. Patch the class,
+  or measure something else.
+- **Pumping the loop from `/py` hides a GUI-thread spin.** A probe that
+  runs `while ...: app.processEvents()` is competing with the very loop
+  it is trying to observe; the queue looks empty because the probe is
+  draining it.
+- **Sleeping on the GUI thread hides it too.** Reading per-thread CPU
+  from *inside* the app via a `/py` that sleeps 1.5s reports the main
+  thread at 0%, because the spin cannot run while the probe holds the
+  thread. Read `psutil.Process(pid).threads()` from **outside**.
+- **What actually located it** was bisection, not instrumentation: close
+  panels one at a time and measure CPU from outside. Zero panels 0.4%,
+  any panel ~90%. Then the decisive observation — a panel that is
+  `hide()`-den still burns, a `close()`-d one does not. Widgets do not
+  care about hiding; **timers do not stop until closeEvent stops them**.
+  That pointed straight at a timer rather than at painting or layout.
+
+Two more things were hardened in the same pass, because they were
+plausible suspects and were genuinely fragile:
+
+- `_reflow_stack` is deferred through a **16ms** timer, not 0ms, and
+  `_do_reflow` is **idempotent**: it builds the whole plan, compares it
+  with the last one applied, and returns without touching a window when
+  they match. Any future feedback loop dies the moment two passes agree.
+- The layout is computed arithmetically from the panels' own heights and
+  **never reads a position back**. `frameGeometry()` right after `move()`
+  is still the previous rect on Windows, so a stack laid out from it
+  never settled.
 
 ### Ending processes: what protects Ivan from this
 

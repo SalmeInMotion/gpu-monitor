@@ -154,17 +154,34 @@ class ProcessPanel(QWidget):
 
     # --- opening and closing ----------------------------------------------
 
-    def open_at(self, anchor_rect, below=None):
-        """Show it: beside the card, or under an already-open panel."""
-        self.place_in_stack(anchor_rect, below)
+    def open_at(self):
+        """Show it. The overlay has already put it where it belongs."""
         self.show()
         self.raise_()
         self._ask()
         self._timer.start()
 
-    def place_in_stack(self, anchor_rect, below=None):
-        """Put it where the stack says, without showing or hiding it."""
-        self._place(anchor_rect, below)
+    def place_at(self, point, card_pos):
+        """Go exactly here. Positioning belongs to the overlay: a panel
+        that worked out its own slot had to read the previous panel's
+        frameGeometry() back, and right after a move() that is still the
+        old rect on Windows -- so every pass computed a different layout
+        and the stack oscillated forever at 100% CPU."""
+        self._card_pos = card_pos
+        self._offset = point - card_pos
+        self._move_to(point)
+
+    def set_topmost(self, on):
+        """Leave or rejoin the always-on-top band. Changing the flag
+        recreates the native window, so it is only touched when it really
+        differs."""
+        want = bool(on)
+        if bool(self.windowFlags() & Qt.WindowStaysOnTopHint) == want:
+            return
+        visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, want)
+        if visible:
+            self.show()
 
     def resizeEvent(self, event):  # noqa: N802 - Qt naming
         super().resizeEvent(event)
@@ -217,6 +234,19 @@ class ProcessPanel(QWidget):
                 return
         super().mousePressEvent(event)
 
+    def _move_to(self, point):
+        """Move without it reading as a hand-drag -- and not at all when
+        it is already there. The no-op matters: a move that changes
+        nothing can still make Qt resize the window on a DPI boundary,
+        and that resize asks for another lay-out."""
+        if self.pos() == point:
+            return
+        self._following = True
+        try:
+            self.move(point)
+        finally:
+            self._following = False
+
     def _clamped(self, point):
         from PySide6.QtGui import QGuiApplication
         rect = QRect(point, self.size())
@@ -228,41 +258,13 @@ class ProcessPanel(QWidget):
         y = max(area.top(), min(point.y(), area.bottom() - self.height()))
         return QPoint(x, y)
 
-    def _place(self, anchor, below=None):
-        """To the right of the card if it fits, otherwise to its left --
-        or directly under an already-open panel when stacking."""
+    def _place(self, anchor):
+        """The free-floating fallback: beside the card. Only used for a
+        panel that is not in the stack."""
         from PySide6.QtGui import QGuiApplication
         screen = QGuiApplication.screenAt(anchor.center())
         area = (screen or QGuiApplication.primaryScreen()).availableGeometry()
         height = self.sizeHint().height()
-        if below is not None:
-            # Stacked: same column as the panel above, just under it.
-            # `below` is a *window* rect, and both windows carry GUTTER of
-            # transparent shadow room, so the visible gap is the window
-            # gap plus two gutters -- subtract them or the cards sit 20px
-            # apart while the constant says 8.
-            x = below.left()
-            # bottom() is the last pixel *inside* the rect, so the edge
-            # below it is bottom() + 1; without that the cards sit one
-            # pixel closer than STACK_GAP says.
-            y = below.bottom() + 1 - 2 * GUTTER + STACK_GAP
-            if y + height > area.bottom():
-                # No room left under it. Start a fresh column beside the
-                # stack rather than clamping, which would drop this panel
-                # on top of the one above and hide both.
-                x = below.right() + STACK_GAP
-                y = anchor.top()
-                if x + self.width() > area.right():
-                    x = max(area.left(), area.right() - self.width())
-            y = max(area.top(), min(y, area.bottom() - height))
-            self._card_pos = anchor.topLeft()
-            self._offset = QPoint(x, y) - self._card_pos
-            self._following = True
-            try:
-                self.move(self._clamped(QPoint(x, y)))
-            finally:
-                self._following = False
-            return
         x = anchor.right() + 4
         if x + self.width() > area.right():
             x = anchor.left() - self.width() - 4
@@ -270,11 +272,7 @@ class ProcessPanel(QWidget):
         y = max(area.top(), min(anchor.top(), area.bottom() - height))
         self._card_pos = anchor.topLeft()
         self._offset = QPoint(x, y) - self._card_pos
-        self._following = True
-        try:
-            self.move(x, y)
-        finally:
-            self._following = False
+        self._move_to(QPoint(x, y))
 
     # --- data --------------------------------------------------------------
 
@@ -338,6 +336,20 @@ class ProcessPanel(QWidget):
         return [e for e in self._entries
                 if e.name in names and not e.protected]
 
+    def _protected_selected(self):
+        """Rows that are highlighted but must never be acted on.
+
+        Walks the items rather than asking selectedItems(): the whole
+        point is that Qt leaves isSelected() true on a row it refuses to
+        put in that list, which is the mismatch this exists to clean up.
+        """
+        out = []
+        for i in range(self.list.topLevelItemCount()):
+            item = self.list.topLevelItem(i)
+            if item.isSelected() and not (item.flags() & Qt.ItemIsSelectable):
+                out.append(item)
+        return out
+
     def _drop_protected_selection(self):
         """Un-highlight any protected row that got selected from code.
 
@@ -347,18 +359,30 @@ class ProcessPanel(QWidget):
         loop: done inside itemSelectionChanged, Qt is still mid-update and
         simply re-applies the selection afterwards.
         """
+        stuck = self._protected_selected()
+        if not stuck:
+            return
         self._clearing = True
         try:
-            for i in range(self.list.topLevelItemCount()):
-                item = self.list.topLevelItem(i)
-                if item.isSelected() and not (
-                        item.flags() & Qt.ItemIsSelectable):
-                    item.setSelected(False)
+            for item in stuck:
+                item.setSelected(False)
         finally:
             self._clearing = False
         self._sync_button()
 
     def _sync_button(self):
+        # Scheduled unconditionally, because during itemSelectionChanged
+        # Qt has not yet marked the row as selected -- asking here whether
+        # there is anything to clean always answers no, and the row stays
+        # highlighted.
+        #
+        # What stops this pair looping is the early return in
+        # _drop_protected_selection: it only calls back here when it
+        # actually cleared something, so the chain is at most sync -> drop
+        # -> sync -> drop(nothing) -> stop. Without that early return the
+        # two scheduled each other through a 0ms timer forever: one core
+        # burned per open panel, no Python event to show for it, and an
+        # app too busy to answer its own Preferences dialog.
         if not self._clearing:
             QTimer.singleShot(0, self._drop_protected_selection)
 
