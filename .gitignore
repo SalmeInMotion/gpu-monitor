@@ -10,3 +10,6 @@ tests/_scratch_appdata/
 # reads it once on his machine, and it carries his window position, so it
 # has no business in a clone.
 vram_monitor_config.json
+
+# Scratch settings folder the README screenshot renders against.
+docs/_shot_appdata/
