@@ -21,6 +21,9 @@ GLYPH_PIN = ""
 GLYPH_UNPIN = ""
 GLYPH_COMPACT = ""
 GLYPH_EXPAND = ""
+# The panel's own Refresh (U+E72C). It has one because the list no longer
+# re-sorts itself under the pointer -- see ProcessPanel.
+GLYPH_REFRESH = ""
 # "keep above": an arrow to a top bar (U+E898). Distinct from the pin the
 # Lock button uses, so the two window toggles do not read as the same idea.
 GLYPH_TOP = ""

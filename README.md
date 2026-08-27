@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      247 offscreen checks, no window, no pytest
+tests/functional.py      257 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -121,11 +121,17 @@ is what ia-usage itself does the moment you pick a custom accent.
 **Double-clicking the name** of `VRAM`, `RAM`, `GPU usage` or `CPU`
 opens a list of what is using it, biggest first, grouped per executable
 — one browser is fifty processes, and fifty identical rows answer
-nothing. Anything under the threshold is left out -- 16 MB on the two
+nothing. Anything under the threshold is left out -- 256 MB on the two
 memory rows, 5% on the two usage ones -- so the list never adds up to
 the bar: the rest is small fry plus, on VRAM, the driver's own
 allocations. The panel is titled with the exact name you double-clicked,
 so no two of them can be mistaken for each other.
+
+**The list holds still.** There is no auto-refresh: opening the panel
+reads once, and after that nothing moves until you press **Refresh** in
+its header. Rows are sorted by size, so a list that re-read itself every
+two seconds kept sliding the row you were aiming at out from under the
+pointer. A refresh keeps your scroll position and your selection.
 
 **Shift + double-click** adds a panel instead of replacing the open one,
 stacking it under the others — so you can watch VRAM, RAM, CPU and GPU
@@ -177,7 +183,11 @@ An **inference server is named after the model it loaded**:
 `llama-server` holding 23 GB is a true statement about nothing, but its
 `--model` argument points at an Ollama blob, and the manifests beside the
 blobs turn `sha256-f5f1dd89...` back into `qwen3.8:latest`. A plain
-`.gguf` names itself.
+`.gguf` names itself. Where even that is unreadable, **Show details**
+asks Ollama over HTTP instead (`/api/ps`), which no privilege boundary
+applies to -- listed under "Ollama reports loaded", apart from the
+per-process block, because it is what Ollama holds rather than something
+a given pid has been proven to be.
 
 Reading an **elevated** process is the one thing none of this can do.
 Same user is not enough -- an elevated process's security descriptor

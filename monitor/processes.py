@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout,
 
 from . import breakdown as bd
 from . import metrics as M
-from .chrome import ChromeButton, GLYPH_CLOSE, chrome_qss
+from .chrome import (ChromeButton, GLYPH_CLOSE, GLYPH_REFRESH,
+                     chrome_qss)
 
 log = logging.getLogger("gpu_monitor.processes")
 
@@ -37,7 +38,11 @@ PANEL_WIDTH = 340
 MAX_ROWS_SHOWN = 9      # past this the list scrolls instead of growing
 ROW_HEIGHT = 22         # kept in step with the QSS below
 
-REFRESH_MS = 2000       # slower than the card: this walks the process table
+# There is no auto-refresh, on purpose. Ivan, watching rows re-sort
+# themselves while he tried to click one: "para que la lista no cambie de
+# posicion, pongamos un boton de refresh". Opening the panel reads once;
+# after that the list holds still until Refresh is pressed.
+
 # Between two stacked panels, measured between what you can *see*. Each
 # window carries a GUTTER of transparent shadow room on every side, so
 # the windows themselves overlap by 2*GUTTER - STACK_GAP for the painted
@@ -259,11 +264,14 @@ class ProcessPanel(QWidget):
         self.title = QLabel(objectName="PanelTitle")
         self.total = QLabel(objectName="PanelTotal")
         self.total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.btn_refresh = ChromeButton(GLYPH_REFRESH, "Refresh", self.card)
+        self.btn_refresh.clicked.connect(self._ask)
         self.btn_close = ChromeButton(GLYPH_CLOSE, "Close", self.card)
         self.btn_close.clicked.connect(self.close)
         head.addWidget(self.title, 1)
         head.addWidget(self.total, 0)
         head.addSpacing(2)
+        head.addWidget(self.btn_refresh, 0)
         head.addWidget(self.btn_close, 0)
         body.addLayout(head)
         body.addSpacing(10)
@@ -308,9 +316,6 @@ class ProcessPanel(QWidget):
         self.title.setText(TITLES.get(kind, kind.upper()))
         self._set_hint("Reading...")
 
-        self._timer = QTimer(self)
-        self._timer.setInterval(REFRESH_MS)
-        self._timer.timeout.connect(self._ask)
         self.theme.changed.connect(self.apply_theme)
         self.apply_theme()
 
@@ -321,7 +326,6 @@ class ProcessPanel(QWidget):
         self.show()
         self.raise_()
         self._ask()
-        self._timer.start()
 
     def place_at(self, point, card_pos):
         """Go exactly here. Positioning belongs to the overlay: a panel
@@ -351,7 +355,6 @@ class ProcessPanel(QWidget):
             self.resized.emit(self.kind)
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
-        self._timer.stop()
         if self._details is not None:
             # It belongs to this panel; a details window outliving the
             # list it came from is an orphan nobody can trace back.
@@ -451,6 +454,10 @@ class ProcessPanel(QWidget):
         if kind != self.kind or not self.isVisible():
             return
         keep = {i.text(0) for i in self.list.selectedItems()}
+        # Rebuilding the list resets the scrollbar, which on a manual
+        # refresh means the row you were reading jumps away from under the
+        # pointer -- the whole complaint this button exists to answer.
+        where = self.list.verticalScrollBar().value()
         self._entries = entries
         self.list.clear()
         for entry in entries:
@@ -491,6 +498,7 @@ class ProcessPanel(QWidget):
         else:
             self._set_hint(f"Nothing is using more than {limit}.")
         self._resize_list()
+        self.list.verticalScrollBar().setValue(where)
         self._sync_button()
 
     def _set_hint(self, text):

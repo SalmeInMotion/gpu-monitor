@@ -297,9 +297,9 @@ rather than a synonym of it. The label carries no layout stretch, so the
 target is exactly as wide as the text looks; `monitor\processes.py` is
 the panel, `monitor\breakdown.py` the data behind it, both grouped per
 executable, sorted descending, with everything under the kind's
-threshold left out -- Ivan's numbers, 16 MB and 5% (512 MB until
-2026-08-27, see below), and the reason the panel's total never matches
-the bar.
+threshold left out -- Ivan's numbers, 256 MB and 5% (see the threshold
+section below; it moved twice in one afternoon), and the reason the
+panel's total never matches the bar.
 
 Four things here are load-bearing, and three of them cost a measurement
 to find:
@@ -590,7 +590,7 @@ difference. An SSH session gets the user's **full** token; a scheduled
 task with `/it`, like the card, gets the filtered one. Never conclude
 from an SSH probe that the app can read something.
 
-#### The memory threshold: 512 MB, then 16 MB
+#### The memory threshold: 512, then 16, then 256 MB
 
 2026-08-27, same afternoon, on "sesinetd y cowork-svc los quiero
 nombrados tambien, baja el umbral". Both are services Ivan wanted named,
@@ -604,7 +604,8 @@ The measured cost of the change, so nobody has to re-measure it:
 | 512 MB | 18 |
 | 128 MB | 52 |
 | 32 MB | 89 |
-| **16 MB** | **113** |
+| **256 MB** | **32** |
+| 16 MB | 113 |
 
 It reads as a big jump and is not, for one reason: **the list is sorted by
 size**, so the top of the panel is identical and the new rows are all
@@ -629,6 +630,31 @@ Two things to keep in mind if it moves again:
 
 The usage threshold stays at **5%**: Ivan asked about two memory rows,
 and 0.5% would fill the CPU panel with everything that ever woke up.
+
+#### No auto-refresh: the list holds still
+
+2026-08-27. "para que la lista no cambie de posicion, pongamos un boton
+de refresh si no le damos los valores de consumo no se actualizan /
+sacar la ventana es refresh automatico".
+
+The panel used to re-read every `REFRESH_MS` (2000). Rows are sorted by
+size and process memory moves constantly, so the row he was aiming at
+kept sliding out from under the pointer -- and this list has an **End
+process** button, which makes a row that moves while you click it worse
+than merely annoying.
+
+- The `QTimer` is **gone**, not stopped. `open_at()` reads once and the
+  Refresh button (`GLYPH_REFRESH`, U+E72C, in the header beside the X)
+  is the only other thing that asks.
+- **`set_entries` restores the scrollbar** it just reset by rebuilding
+  the list. It already restored the selection by name; the scroll
+  position was the other half of the same complaint.
+- The `refresh_requested` signal and the sampler path behind it are
+  unchanged -- only who pulls the trigger.
+
+Consequence worth knowing: the CPU breakdown needs two readings, so
+`SamplerWorker._cpu_breakdown` will now usually find its baseline stale
+and pay its 300 ms on every press rather than once.
 
 #### svchost: the same problem, the opposite treatment
 

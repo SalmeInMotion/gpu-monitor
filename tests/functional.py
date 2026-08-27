@@ -267,12 +267,14 @@ check("bytes still format as bytes",
       bd.fmt_value(bd.KIND_VRAM, 2 * 1024 ** 3))
 check("each kind states its own threshold",
       (bd.fmt_threshold(bd.KIND_RAM), bd.fmt_threshold(bd.KIND_CPU))
-      == ("16 MB", "5%"),
+      == ("256 MB", "5%"),
       str((bd.fmt_threshold(bd.KIND_RAM), bd.fmt_threshold(bd.KIND_CPU))))
-# The two Ivan asked for by name on 2026-08-27, both invisible at 512 MB:
-# HoudiniLicenseServer is 21 MB and Claude's cowork-svc 27 MB.
-check("the cut is low enough for a small named service",
-      bd.HIDE_BELOW_BYTES <= 20 * MB, bd.fmt_threshold(bd.KIND_RAM))
+# 512 -> 16 -> 256, all Ivan's, all in one afternoon. 16 MB admitted the
+# small named services he had asked for, and 113 rows with them; his
+# verdict on seeing it was that nothing that small belongs in a list whose
+# question is "what is eating this".
+check("the cut is Ivan's current number", bd.HIDE_BELOW_BYTES == 256 * MB,
+      bd.fmt_threshold(bd.KIND_RAM))
 
 # CPU time is a running total: the percentage is the difference between
 # two readings over the wall time between them, divided by the cores.
@@ -642,6 +644,69 @@ check("End would only touch the unprotected pids",
 check("the panel states the cut it is applying",
       bd.fmt_threshold(bd.KIND_RAM) in panel.hint.text(), panel.hint.text())
 panel.close()
+
+from PySide6.QtCore import QTimer
+print("\n-- the list holds still until Refresh --")
+# Ivan: "para que la lista no cambie de posicion, pongamos un boton de
+# refresh". Rows re-sorting themselves every two seconds moved the one he
+# was aiming at out from under the pointer.
+_rp = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
+check("the panel has no repeating timer left",
+      not [t for t in _rp.findChildren(QTimer) if t.isActive()],
+      str([t.interval() for t in _rp.findChildren(QTimer)]))
+check("it has a Refresh button", _rp.btn_refresh is not None
+      and _rp.btn_refresh.toolTip() == "Refresh")
+
+_asked = []
+_rp.refresh_requested.connect(_asked.append)
+_rp.open_at()
+settle()
+check("opening it reads once, without being asked",
+      _asked == [bd.KIND_RAM], str(_asked))
+settle_ms(300)
+check("and then it stays quiet", _asked == [bd.KIND_RAM], str(_asked))
+_rp.btn_refresh.click()
+settle()
+check("the button is what asks for more",
+      _asked == [bd.KIND_RAM, bd.KIND_RAM], str(_asked))
+
+# Rebuilding the list resets the scrollbar, which on a manual refresh
+# throws the row you were reading away from under the pointer -- the very
+# thing the button exists to stop.
+_long = [bd.Entry(f"app{i:02d}", (60 - i) * 100 * MB, [7000 + i])
+         for i in range(20)]
+_rp.set_entries(bd.KIND_RAM, _long)
+settle()
+_rp.list.verticalScrollBar().setValue(5)
+settle()
+_rp.set_entries(bd.KIND_RAM, _long)
+settle()
+check("a refresh keeps the scroll where it was",
+      _rp.list.verticalScrollBar().value() == 5,
+      str(_rp.list.verticalScrollBar().value()))
+_rp.close()
+settle()
+
+print("\n-- ollama, asked over HTTP --")
+# The last resort for a llama-server we may not open: HTTP knows nothing
+# about elevation, and on AI-cachofo that is the only thing that answers.
+check("it returns a list whether or not ollama is up",
+      isinstance(bd.ollama_loaded(), list))
+
+_real_loaded = bd.ollama_loaded
+bd.ollama_loaded = lambda: [("qwen3.8:latest", 17 * 1024 ** 3)]
+try:
+    _served = bd.details(bd.Entry("llama-server", 900 * MB, [4]), bd.KIND_VRAM)
+    _other = bd.details(bd.Entry("chrome", 900 * MB, [4]), bd.KIND_VRAM)
+finally:
+    bd.ollama_loaded = _real_loaded
+check("the details of a model server list what ollama holds",
+      "qwen3.8:latest" in _served and "17 GB" in _served, _served[-90:])
+# Labelled with its source and kept apart from the per-process block: it
+# is what Ollama says it holds, not something a pid has been proven to be.
+check("and say where that came from", "Ollama reports loaded:" in _served)
+check("an ordinary row is not asked about at all",
+      "Ollama" not in _other)
 
 print("\n-- several panels at once --")
 ov._pointer_held = lambda: False

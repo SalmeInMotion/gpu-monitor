@@ -40,14 +40,12 @@ KIND_CPU = "cpu"
 MEMORY_KINDS = frozenset({KIND_VRAM, KIND_RAM})
 USAGE_KINDS = frozenset({KIND_GPU, KIND_CPU})
 
-# 512 MB to begin with -- "what do I close" has no interest in a 40 MB
-# process. Lowered to 16 MB on 2026-08-27, once the rows started naming
-# themselves: the answer to "which service is that" is worth having for
-# things far too small to be worth closing. HoudiniLicenseServer is 21 MB
-# and Claude's cowork-svc 27 MB, and both were invisible at 512.
-# It costs length -- 18 rows became 113 on this machine -- but the list is
-# sorted by size, so the top of it reads exactly as it did.
-HIDE_BELOW_BYTES = 16 * 1024 * 1024
+# 512 MB, then 16 MB for an afternoon, then 256 -- all Ivan's, all on
+# 2026-08-27. 16 admitted the small named services he had asked for and
+# 113 rows with them; his verdict on seeing it was that anything that
+# small is not relevant to a list whose question is "what is eating this".
+# 256 MB is where it rests: about 32 rows here.
+HIDE_BELOW_BYTES = 256 * 1024 * 1024
 HIDE_BELOW_PERCENT = 5.0
 
 # Killing any of these takes Windows down with it, so they are listed but
@@ -329,6 +327,34 @@ def ollama_names(rebuild=False):
                     found[digest.replace(":", "-")] = name
     _ollama_blobs = found
     return found
+
+
+def ollama_loaded():
+    """[(model, bytes resident)] that Ollama says it currently holds.
+
+    The last resort for a `llama-server` we may not open: HTTP knows
+    nothing about elevation, so this answers where the command line does
+    not -- and on AI-cachofo that is the only thing that does, since
+    Ollama runs elevated there. Deliberately *not* attributed to a pid:
+    two servers can be up, and matching them by size would be a guess
+    dressed as a fact.
+    """
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps",
+                                    timeout=1.5) as answer:
+            doc = json.loads(answer.read().decode("utf-8"))
+    except Exception:
+        return []       # not running, not listening, not our business
+    out = []
+    for model in doc.get("models", ()):
+        name = model.get("name") or model.get("model")
+        if name:
+            out.append((name, int(model.get("size_vram")
+                                  or model.get("size") or 0)))
+    out.sort(key=lambda row: -row[1])
+    return out
 
 
 def _model_of(argv):
@@ -653,6 +679,19 @@ def details(entry, kind):
     left = len(entry.pids) - DETAIL_PIDS
     if left > 0:
         out.append(f"and {left} more process" + ("es" if left != 1 else ""))
+
+    if host in MODEL_HOSTS:
+        # Asked over HTTP, which no privilege boundary applies to. Kept
+        # apart from the per-process block above and labelled with its
+        # source, because it is what Ollama says it holds -- not something
+        # any of these pids has been proven to be.
+        held = ollama_loaded()
+        if held:
+            out.append("")
+            out.append("Ollama reports loaded:")
+            for model, resident in held:
+                out.append(f"    {model}"
+                           + (f"    {fmt_bytes(resident)}" if resident else ""))
     return "\n".join(out).rstrip()
 
 
