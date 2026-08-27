@@ -550,6 +550,45 @@ process table rather than by reasoning about it:
 - **`C:\Windows` names an installation, not a project**, so
   `_is_the_systems_own()` skips those paths entirely.
 
+#### Reading a command line is a privilege question, not an API question
+
+The feature shipped working on chofostation and doing **nothing** on
+AI-cachofo -- the machine it was written for. Same code, same user, same
+30 GB row still called `python`. Three layers had to come off:
+
+1. **psutil reads the target's PEB**, which needs `PROCESS_VM_READ`. An
+   ordinary process does not get that over an elevated one. Replaced with
+   `winproc.command_line()`:
+   `NtQueryInformationProcess(ProcessCommandLineInformation, 60)`, which
+   the kernel answers on a `PROCESS_QUERY_LIMITED_INFORMATION` handle,
+   plus `CommandLineToArgvW` to split it. Verified against psutil on all
+   87 generic hosts here: identical argv, same 23 ms.
+2. **That was still denied**, `ERROR_ACCESS_DENIED` from `OpenProcess`
+   itself. Same user is not enough: an **elevated** process's descriptor
+   grants the *Administrators* group, and an ordinary token carries that
+   group as **deny-only**, so no handle is issued at all. This is the same
+   reason Task Manager needs elevating to show details of elevated
+   processes.
+3. **WMI is not a way round it.** Its provider runs as SYSTEM, which is
+   why it looks like one -- but from the unelevated card
+   `Win32_Process.CommandLine` returns the **empty string**, rc=0, no
+   error. Tested from inside the card's own process; do not re-litigate
+   this.
+
+So it stops there. `winproc.denied(pid)` tells the two failures apart --
+refused versus simply gone -- and such a row keeps the host's name and
+carries `OUT_OF_REACH` as its tooltip. Elevating a monitor to name one
+row is a bad trade, and a row that explains itself beats one that just
+looks broken.
+
+**How this was found, because the shortcut is not obvious:** the card
+answers `/py` on the Supervisor bridge, so the question "what does the
+*running app* see?" is one call away -- and the answer (`AccessDenied`
+from inside, success from an SSH shell) is what named elevation as the
+difference. An SSH session gets the user's **full** token; a scheduled
+task with `/it`, like the card, gets the filtered one. Never conclude
+from an SSH probe that the app can read something.
+
 `svchost` is deliberately **not** in the set. It has the same problem and
 a different answer -- the services it hosts, which needs the SCM rather
 than a command line -- and it is protected anyway, so nothing can be done
