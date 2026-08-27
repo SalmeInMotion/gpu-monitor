@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (QBrush, QColor, QLinearGradient, QPainter,
+                           QPainterPath, QPen)
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout,
                                QHeaderView, QLabel, QMenu, QMessageBox,
                                QPlainTextEdit, QPushButton, QTreeWidget,
@@ -62,6 +63,72 @@ TIP_CHARS = 420
 def _elide(text, limit=TIP_CHARS):
     text = (text or "").strip()
     return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+# How much of the machine one row is holding, as a bar behind its text --
+# Ivan's own arithmetic: "si tenemos 192 gb de ram en el sistema, y un
+# proceso ocupa 96 gb, llenara la mitad del ancho de la barra, y sera
+# amarilla, si un proyecto llegase a ocupar mas del 75% de la ram
+# instalada seria rojo".
+#
+# Four bands rather than the card's three, and placed so his two anchors
+# land where he said: half the machine is yellow, three quarters is red.
+# The green and amber pairs are the card's own; orange is interpolated
+# between amber and red so the four read as one ramp.
+ROW_RAMP = (
+    (30.0, "#72d08f", "#3f9e63"),           # green
+    (60.0, "#f3c36a", "#d99420"),           # yellow  <- 50% lands here
+    (75.0, "#f0a06f", "#e0632a"),           # orange
+    (float("inf"), "#ee8484", "#ce3d3d"),   # red
+)
+# The bar sits *behind* the text, so it cannot be as solid as a meter's
+# fill: at full strength the labels stop being readable on it.
+ROW_BAR_ALPHA = 96
+ROW_BAR_RADIUS = 3.0
+ROW_BAR_INSET = 1.5
+# The share of one row, stashed on its column-0 item for drawRow to find.
+SHARE_ROLE = Qt.UserRole + 1
+# Selected rows go translucent for the same reason the bar is: a solid
+# accent would paint the share away.
+SELECTION_ALPHA = 96
+
+
+def row_band(percent):
+    """(left, right) of the band this share of the machine falls in."""
+    for limit, left, right in ROW_RAMP:
+        if percent <= limit:
+            return left, right
+    return ROW_RAMP[-1][1], ROW_RAMP[-1][2]
+
+
+class RowList(QTreeWidget):
+    """The list, with each row's share of the machine painted behind it.
+
+    A delegate cannot do this: it paints one *cell*, and Qt clips it to
+    that cell, so a bar spanning name and value would be cut in half at
+    the column boundary. `drawRow` is handed the whole row.
+    """
+
+    def drawRow(self, painter, option, index):  # noqa: N802 - Qt naming
+        share = index.data(SHARE_ROLE)
+        if share:
+            rect = QRectF(option.rect).adjusted(
+                0, ROW_BAR_INSET, 0, -ROW_BAR_INSET)
+            rect.setWidth(max(2.0, rect.width() * min(1.0, float(share))))
+            left, right = row_band(float(share) * 100.0)
+            start, end = QColor(left), QColor(right)
+            start.setAlpha(ROW_BAR_ALPHA)
+            end.setAlpha(ROW_BAR_ALPHA)
+            gradient = QLinearGradient(rect.left(), 0.0, rect.right(), 0.0)
+            gradient.setColorAt(0.0, start)
+            gradient.setColorAt(1.0, end)
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(gradient))
+            painter.drawRoundedRect(rect, ROW_BAR_RADIUS, ROW_BAR_RADIUS)
+            painter.restore()
+        super().drawRow(painter, option, index)
 
 
 def paint_card(widget, card_widget):
@@ -239,6 +306,10 @@ class ProcessPanel(QWidget):
         self._muted = "#909093"
         self._clearing = False
         self._details = None
+        # What the whole machine has of this, so a row can say what share
+        # of it one app is holding. 100 for the two percentage kinds,
+        # since their values are already shares.
+        self._capacity = 100.0 if kind in bd.USAGE_KINDS else 0.0
         self.kind = kind
         self._entries = []
         # In the stack the overlay lays out, until the user drags it out.
@@ -276,7 +347,7 @@ class ProcessPanel(QWidget):
         body.addLayout(head)
         body.addSpacing(10)
 
-        self.list = QTreeWidget(self.card)
+        self.list = RowList(self.card)
         self.list.setObjectName("PanelList")
         self.list.setColumnCount(2)
         self.list.setHeaderHidden(True)
@@ -449,6 +520,29 @@ class ProcessPanel(QWidget):
     def _ask(self):
         self.refresh_requested.emit(self.kind)
 
+    def set_capacity(self, total):
+        """How much the machine has of this in all, for the share bars.
+
+        Pushed by the card, which is the only thing holding a sample. The
+        panel does not read it on its own timer -- it has no timer.
+        """
+        total = float(total or 0.0)
+        if total == self._capacity:
+            return
+        self._capacity = total
+        # Re-share the rows already on screen rather than re-reading the
+        # process table: the first sample can land after the panel opened,
+        # and a refresh nobody asked for is what the Refresh button exists
+        # to prevent.
+        for i in range(self.list.topLevelItemCount()):
+            item = self.list.topLevelItem(i)
+            entry = next((e for e in self._entries if e.name == item.text(0)),
+                         None)
+            if entry is not None and total > 0:
+                item.setData(0, SHARE_ROLE,
+                             max(0.0, min(1.0, entry.value / total)))
+        self.list.viewport().update()
+
     def set_entries(self, kind, entries):
         """Called with whatever the sampler thread came back with."""
         if kind != self.kind or not self.isVisible():
@@ -464,6 +558,9 @@ class ProcessPanel(QWidget):
             item = QTreeWidgetItem(
                 [entry.name, bd.fmt_value(kind, entry.value)])
             item.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+            if self._capacity > 0:
+                item.setData(0, SHARE_ROLE,
+                             max(0.0, min(1.0, entry.value / self._capacity)))
             tip = _elide(entry.detail)
             if len(entry.pids) > 1:
                 count = f"{len(entry.pids)} processes"
@@ -671,6 +768,12 @@ QMenu::item:selected {{ background: {t['ACCENT']}; color: {t['ON_ACCENT']}; }}
         self.update()
 
     def _qss(self, t):
+        # The selection has to be translucent, or it hides the share bar
+        # exactly when you are looking hardest at the row. There is no
+        # token for this: the palette carries solid accents only.
+        picked = QColor(t["ACCENT"])
+        chosen = (f"rgba({picked.red()}, {picked.green()}, "
+                  f"{picked.blue()}, {SELECTION_ALPHA})")
         return f"""
 QWidget#PanelCard {{ background: transparent; }}
 QLabel {{ background: transparent; font-family: "Segoe UI"; }}
@@ -693,8 +796,8 @@ QTreeWidget#PanelList::item {{
 }}
 QTreeWidget#PanelList::item:hover {{ background: rgba(128, 128, 128, 20); }}
 QTreeWidget#PanelList::item:selected {{
-    background: {t['ACCENT']};
-    color: {t['ON_ACCENT']};
+    background: {chosen};
+    color: {t['TEXT']};
 }}
 /* A protected row is listed but cannot be picked; say so in the colour. */
 QTreeWidget#PanelList::item:disabled {{ color: {t['TEXT_45']}; }}

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect,
                                QHBoxLayout, QLabel, QMenu, QSizePolicy,
                                QToolButton, QToolTip, QVBoxLayout, QWidget)
 
+from . import breakdown as bd
 from . import metrics as M
 from .chrome import (ChromeButton, GLYPH_CLOSE, GLYPH_COMPACT,
                      GLYPH_EXPAND, GLYPH_PIN, GLYPH_SETTINGS,
@@ -527,6 +528,7 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
     def on_sample(self, sample):
         self._sample = sample
         self._got_sample = True
+        self._push_capacity()
         for metric in M.METRICS:
             if metric.available(sample):
                 self._sensed.add(metric.key)
@@ -986,6 +988,26 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
             return
         self._open_panel(kind, stack=False)
 
+    # What the whole machine has of each meter, in the units the panel's
+    # own values are in. The two percentage kinds are already shares of
+    # the machine, so the panel fixes those at 100 itself.
+    CAPACITY_OF = {bd.KIND_VRAM: "mem_total", bd.KIND_RAM: "ram_total"}
+
+    def _push_capacity(self):
+        """Tell each open panel how big the machine is, so its rows can
+        say what share of it they are holding.
+
+        Here rather than in the panel because the card is the only thing
+        that ever sees a sample -- and because the panel deliberately has
+        no timer of its own any more."""
+        for kind, panel in self._panels.items():
+            field = self.CAPACITY_OF.get(kind)
+            if field is None:
+                continue
+            total = self._sample.get(field)
+            if total:
+                panel.set_capacity(float(total) * 1024 * 1024)   # MB -> bytes
+
     def _open_panel(self, kind, stack):
         panel = ProcessPanel(self.theme, self.settings, kind)
         panel.refresh_requested.connect(self.breakdown_requested)
@@ -996,6 +1018,7 @@ QWidget#Card[compact="true"] QLabel[role="value"]   {{ font-size: 10px; }}
         panel.resized.connect(
             lambda _k, p=panel: self._reflow_stack() if p.isVisible() else None)
         self._panels[kind] = panel
+        self._push_capacity()       # it may open between two samples
         self._last_layout = None
         if kind not in self._stack_order:
             self._stack_order.append(kind)

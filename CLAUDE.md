@@ -631,6 +631,42 @@ Two things to keep in mind if it moves again:
 The usage threshold stays at **5%**: Ivan asked about two memory rows,
 and 0.5% would fill the CPU panel with everything that ever woke up.
 
+#### The share bar behind each row
+
+2026-08-27. "si tenemos 192 gb de ram en el sistema, y un proceso ocupa
+96 gb, llenara la mitad del ancho de la barra, y sera amarilla, si un
+proyecto llegase a ocupar mas del 75% de la ram instalada, seria rojo /
+el resto, gradaciones, verde, amarillo, naranja, rojo" -- and, decisive
+for the implementation, "**detras de los textos, no arriba o debajo**".
+
+The denominator is the **whole machine**, not the panel's total and not
+the biggest row. That is the point of it: 6 GB means nothing until you
+know whether the box has 8 or 192.
+
+- **`drawRow`, not a delegate.** A `QStyledItemDelegate` paints one
+  *cell* and Qt clips it there, so a bar spanning the name and the value
+  would be sliced at the column boundary. `RowList` overrides
+  `QTreeView.drawRow`, which is handed the whole row, paints the bar and
+  then lets the base class draw selection and text on top.
+- **Four bands, placed on his two anchors.** `ROW_RAMP`: green to 30,
+  yellow to 60 (so half the machine is yellow), orange to 75, red past it
+  (he said *more than* 75%, so 75 itself is still orange). Green and
+  amber are the card's own pairs; orange is interpolated between amber
+  and red so the four read as one ramp.
+- **Alpha, twice.** The bar is `ROW_BAR_ALPHA` because at full strength
+  the labels stop being readable on it -- and the **selection** had to go
+  translucent too (`SELECTION_ALPHA`), or a solid accent paints the share
+  away exactly when you are looking hardest at the row. There is no token
+  for a translucent accent; it is built from `ACCENT` in `_qss`.
+- **The card pushes the capacity, the panel never reads it.** Only the
+  overlay ever sees a sample (`Overlay._push_capacity`, `CAPACITY_OF`),
+  and the panel has no timer any more. `set_capacity()` re-shares the
+  rows already on screen rather than re-reading the process table: the
+  first sample can land after the panel opened, and a refresh nobody
+  asked for is the thing the Refresh button exists to prevent.
+- The two percentage kinds fix their own capacity at 100 in
+  `__init__` -- their values are already shares of the machine.
+
 #### No auto-refresh: the list holds still
 
 2026-08-27. "para que la lista no cambie de posicion, pongamos un boton

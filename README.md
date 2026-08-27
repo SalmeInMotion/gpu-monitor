@@ -28,7 +28,7 @@ monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      257 offscreen checks, no window, no pytest
+tests/functional.py      270 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -126,6 +126,13 @@ memory rows, 5% on the two usage ones -- so the list never adds up to
 the bar: the rest is small fry plus, on VRAM, the driver's own
 allocations. The panel is titled with the exact name you double-clicked,
 so no two of them can be mistaken for each other.
+
+**Each row carries a bar behind its text** showing what share of the
+whole machine it is holding: a process on 96 GB of an installed 192 fills
+half the width, and the colour follows the same number -- green, yellow
+at half, orange, and red past three quarters. It answers a different
+question from the figure beside it: 6 GB means nothing until you know
+whether the box has 8 or 192.
 
 **The list holds still.** There is no auto-refresh: opening the panel
 reads once, and after that nothing moves until you press **Refresh** in

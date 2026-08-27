@@ -99,6 +99,7 @@ ov.show_breakdown("cpu", additive=True)
 settle()
 for kind, rows in (("vram", VRAM_ROWS), ("ram", RAM_ROWS), ("cpu", CPU_ROWS)):
     ov._panels[kind].set_entries(kind, rows)
+ov._push_capacity()
 settle(400)
 
 windows = [ov] + [ov._panels[k] for k in ("vram", "ram", "cpu")]

@@ -708,6 +708,75 @@ check("and say where that came from", "Ollama reports loaded:" in _served)
 check("an ordinary row is not asked about at all",
       "Ollama" not in _other)
 
+print("\n-- a share bar behind each row --")
+# Ivan's own arithmetic: "si tenemos 192 gb de ram en el sistema, y un
+# proceso ocupa 96 gb, llenara la mitad del ancho de la barra, y sera
+# amarilla, si un proyecto llegase a ocupar mas del 75% ... seria rojo".
+from monitor.processes import (ROW_RAMP, SHARE_ROLE, RowList, row_band)
+GREEN, YELLOW, ORANGE, RED = [band[1] for band in ROW_RAMP]
+check("half the machine is yellow, as he said", row_band(50.0)[0] == YELLOW,
+      row_band(50.0)[0])
+check("more than three quarters is red", row_band(76.0)[0] == RED,
+      row_band(76.0)[0])
+check("75 itself is not yet red -- he said *more than*",
+      row_band(75.0)[0] == ORANGE, row_band(75.0)[0])
+check("a small share is green", row_band(5.0)[0] == GREEN)
+check("and the four bands are one ramp, green to red",
+      [b[1] for b in ROW_RAMP] == [GREEN, YELLOW, ORANGE, RED])
+
+_bp = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
+_bp.show()
+# 192 GB installed, one process holding 96 of them.
+_bp.set_capacity(192 * 1024 ** 3)
+_bp.set_entries(bd.KIND_RAM, [bd.Entry("hog", 96 * 1024 ** 3, [1]),
+                              bd.Entry("small", 2 * 1024 ** 3, [2])])
+settle()
+_share = _bp.list.topLevelItem(0).data(0, SHARE_ROLE)
+check("96 of 192 GB fills half the bar", abs(_share - 0.5) < 0.001,
+      str(_share))
+check("and a small one fills little",
+      abs(_bp.list.topLevelItem(1).data(0, SHARE_ROLE) - 2 / 192) < 0.001)
+
+# The first sample can land after the panel opened, and re-reading the
+# process table to colour it in is exactly what the Refresh button exists
+# to prevent.
+_asked = []
+_bp.refresh_requested.connect(_asked.append)
+_bp.set_capacity(96 * 1024 ** 3)
+settle()
+check("a new capacity re-shares the rows already on screen",
+      abs(_bp.list.topLevelItem(0).data(0, SHARE_ROLE) - 1.0) < 0.001,
+      str(_bp.list.topLevelItem(0).data(0, SHARE_ROLE)))
+check("without asking for the process table again", _asked == [], str(_asked))
+check("the list paints the bars itself", isinstance(_bp.list, RowList))
+_bp.close()
+settle()
+
+# A percentage is already a share of the machine, so those two need no
+# capacity pushed at all.
+_cp = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_CPU)
+check("a percentage kind knows its own scale", _cp._capacity == 100.0)
+_cp.show()      # set_entries ignores a panel nobody is looking at
+_cp.set_entries(bd.KIND_CPU, [bd.Entry("busy", 80.0, [1])])
+settle()
+check("so 80% fills four fifths",
+      abs(_cp.list.topLevelItem(0).data(0, SHARE_ROLE) - 0.8) < 0.001)
+_cp.close()
+settle()
+
+# The card is the only thing that ever sees a sample, so it is the card
+# that has to tell the panels how big the machine is.
+ov.show_breakdown(bd.KIND_RAM)
+settle()
+ov.on_sample(SAMPLE)
+settle()
+check("the card pushes the machine's size to an open panel",
+      ov._panels[bd.KIND_RAM]._capacity ==
+      float(SAMPLE["ram_total"]) * 1024 * 1024,
+      str(ov._panels[bd.KIND_RAM]._capacity))
+ov.show_breakdown(bd.KIND_RAM)
+settle()
+
 print("\n-- several panels at once --")
 ov._pointer_held = lambda: False
 ov.move(20, 20)
