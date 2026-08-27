@@ -26,8 +26,9 @@ try:
 except ImportError:  # pragma: no cover - depends on the machine
     psutil = None
 
-from .winproc import (command_line, denied, image_path,
-                      services_by_pid, snapshot, working_sets)
+from .winproc import (command_line, denied, image_path, image_path_unopened,
+                      listening_ports, services_by_pid, snapshot,
+                      window_titles, working_sets)
 
 # The metric keys from metrics.py; `Metric.breakdown` just says whether a
 # row has one, and the kind is the key itself.
@@ -282,6 +283,89 @@ def describe(pid, host):
     return None, line
 
 
+# --- inference servers: the model is the identity ---------------------------
+#
+# `llama-server` holding 23 GB of video memory is a true statement about
+# nothing. What it has loaded is on its command line, but as a blob digest
+# -- `--model ...\blobs\sha256-f5f1dd89...` -- because that is how Ollama
+# stores them. The manifests beside the blobs turn it back into a name.
+
+MODEL_HOSTS = frozenset({
+    "llama-server", "ollama_llama_server", "llamafile", "koboldcpp",
+})
+_TAKES_A_MODEL = frozenset({"--model", "-m", "--model-path"})
+
+_ollama_blobs = None
+
+
+def ollama_names(rebuild=False):
+    """{blob digest: "qwen3.8:latest"} from the manifests on disk."""
+    global _ollama_blobs
+    if _ollama_blobs is not None and not rebuild:
+        return _ollama_blobs
+    import glob
+    import json
+    found = {}
+    root = os.path.join(os.path.expanduser("~"), ".ollama", "models",
+                        "manifests")
+    if os.path.isdir(root):
+        for path in glob.glob(os.path.join(root, "**", "*"), recursive=True):
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    doc = json.load(handle)
+            except Exception:
+                continue
+            # The manifest's own path is the model's name:
+            # registry.ollama.ai/library/qwen3.8/latest -> qwen3.8:latest
+            parts = os.path.relpath(path, root).replace(os.sep, "/").split("/")
+            name = f"{parts[-2]}:{parts[-1]}" if len(parts) >= 2 else parts[-1]
+            digests = [(layer.get("digest") or "")
+                       for layer in doc.get("layers", ())]
+            digests.append((doc.get("config") or {}).get("digest") or "")
+            for digest in digests:
+                if digest:
+                    found[digest.replace(":", "-")] = name
+    _ollama_blobs = found
+    return found
+
+
+def _model_of(argv):
+    """The model file an inference server was pointed at, or None."""
+    for i, token in enumerate(argv[1:], start=1):
+        if token.lower() in _TAKES_A_MODEL and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def describe_model(pid, host):
+    """(the model it has loaded, its full command line)."""
+    argv = command_line(pid)
+    if not argv and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline()
+        except Exception:
+            argv = None
+    if not argv:
+        return None, ""
+    line = " ".join(argv)
+    path = _model_of(argv)
+    if not path:
+        return None, line
+    stem = os.path.basename(path)
+    known = ollama_names().get(stem)
+    if known is None and stem.startswith("sha256-"):
+        # A model pulled since we last looked. Re-read once, not every
+        # refresh: a miss is the only thing that can mean it is stale.
+        known = ollama_names(rebuild=True).get(stem)
+    if known:
+        return known, line
+    # Not an Ollama blob: a plain .gguf names itself well enough.
+    plain = os.path.splitext(stem)[0]
+    return (plain if _tells_us_something(plain, host) else None), line
+
+
 def name_map():
     """{pid: executable} in one sweep, for the GPU counters' bare pids."""
     rows = working_sets()
@@ -352,6 +436,8 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES, kind=KIND_RAM):
     # What each pid contributed, kept only until the services are named:
     # ranking them needs the per-process figures the grouping throws away.
     contrib = {}
+    # Read at most once, and only if something is actually out of reach.
+    ports = None
     for pid, value in raw.items():
         if value <= 0:
             continue
@@ -361,11 +447,14 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES, kind=KIND_RAM):
         # dropped from a total the bar is showing.
         name = _tidy(raw_name) if raw_name else "(other)"
         detail = ""
-        if name.lower() in GENERIC_HOSTS:
-            # Group by what it is running, not by the interpreter running
-            # it, so two unrelated tools are two rows instead of one
-            # meaningless total.
-            label, line = describe(pid, name)
+        if name.lower() in GENERIC_HOSTS or name.lower() in MODEL_HOSTS:
+            # Group by what it is running, not by the thing running it, so
+            # two unrelated tools are two rows instead of one meaningless
+            # total -- and so an inference server names its model.
+            if name.lower() in MODEL_HOSTS:
+                label, line = describe_model(pid, name)
+            else:
+                label, line = describe(pid, name)
             if label:
                 name = f"{label} ({name})"
                 # Only then: a row that stayed "powershell" is eleven
@@ -373,8 +462,15 @@ def _collect(raw, names=None, threshold=HIDE_BELOW_BYTES, kind=KIND_RAM):
                 # line as though it were the group's is a half-truth.
                 detail = line
             elif denied(pid):
-                # Not a shrug: the row can say why it has nothing to say.
+                # Not a shrug: the row can say why it has nothing to say,
+                # and a listening port is often the whole answer anyway.
+                if ports is None:
+                    ports = listening_ports()
+                heard = ports.get(pid) or []
                 detail = OUT_OF_REACH
+                if heard:
+                    detail += "\nListening on " + ", ".join(
+                        f"{kind} {port}" for kind, port in heard)
         slot = grouped.get(name)
         if slot is None:
             grouped[name] = Entry(name, value, [pid], detail)
@@ -498,6 +594,66 @@ def cpu_entries(before, after):
         if used > 0:
             raw[pid] = used / span * 100.0
     return _collect(raw, after[2], HIDE_BELOW_PERCENT, KIND_CPU)
+
+
+# --- everything knowable about one row ---------------------------------------
+
+DETAIL_PIDS = 12        # past this the window is a wall rather than an answer
+
+
+def details(entry, kind):
+    """The long answer behind a row, for the right-click "Show details".
+
+    Deliberately says what it could *not* find as well as what it could:
+    the whole point of this window is that the row's one line was not
+    enough, and a blank where the command line should be is a worse
+    answer than a sentence explaining why there isn't one.
+    """
+    ports = listening_ports()
+    titles = window_titles()
+    services = services_by_pid()
+    host = _tidy(entry.name.split(" (")[-1].rstrip(")")).lower() \
+        if "(" in entry.name else entry.name.lower()
+
+    out = [f"{entry.name}    {fmt_value(kind, entry.value)}",
+           f"{len(entry.pids)} process" + ("es" if len(entry.pids) != 1 else ""),
+           ""]
+
+    for pid in entry.pids[:DETAIL_PIDS]:
+        out.append(f"pid {pid}")
+        path = image_path(pid)
+        out.append(f"    image      {path or 'unavailable'}")
+
+        argv = command_line(pid)
+        if argv:
+            out.append(f"    command    {' '.join(argv)}")
+            if host in MODEL_HOSTS:
+                model = _model_of(argv)
+                if model:
+                    named = ollama_names().get(os.path.basename(model))
+                    out.append(f"    model      {named or model}")
+        elif denied(pid):
+            out.append("    command    unavailable -- runs with more "
+                       "privilege than the monitor")
+        else:
+            out.append("    command    unavailable")
+
+        heard = ports.get(pid)
+        if heard:
+            out.append("    listening  " + ", ".join(
+                f"{proto} {port}" for proto, port in heard))
+        window = titles.get(pid)
+        if window:
+            out.append(f"    window     {window[0]}")
+        running = services.get(pid)
+        if running:
+            out.append("    services   " + ", ".join(running))
+        out.append("")
+
+    left = len(entry.pids) - DETAIL_PIDS
+    if left > 0:
+        out.append(f"and {left} more process" + ("es" if left != 1 else ""))
+    return "\n".join(out).rstrip()
 
 
 # --- formatting -------------------------------------------------------------

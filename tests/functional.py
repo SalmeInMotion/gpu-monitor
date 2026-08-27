@@ -510,6 +510,107 @@ check("a command line too long to hover over is cut",
       str(len(_elide("x" * 900))))
 check("a short one is left alone", _elide("python app.py") == "python app.py")
 
+print("\n-- an inference server is named after its model --")
+# "llama-server, 23 GB" is a true statement about nothing. What it loaded
+# is on the command line, as an Ollama blob digest.
+check("--model names the file",
+      bd._model_of(["llama-server.exe", "--model", r"C:\b\sha256-abc",
+                    "--port", "1"]) == r"C:\b\sha256-abc")
+check("-m is the short spelling",
+      bd._model_of(["llama-server.exe", "-m", "qwen.gguf"]) == "qwen.gguf")
+check("no model argument, no answer",
+      bd._model_of(["llama-server.exe", "--port", "1"]) is None)
+check("the ollama map is a dict either way",
+      isinstance(bd.ollama_names(), dict))
+
+_real_cmdline = bd.command_line
+bd.command_line = lambda pid: ["llama-server.exe", "--model",
+                               r"C:\b\blobs\sha256-dead", "--port", "1"]
+bd._ollama_blobs = {"sha256-dead": "qwen3.8:latest"}
+try:
+    blob_label, blob_line = bd.describe_model(4321, "llama-server")
+    bd.command_line = lambda pid: ["llama-server.exe", "--model",
+                                   r"C:\m\qwen3-8b-q4_k_m.gguf"]
+    gguf_label, _ = bd.describe_model(4321, "llama-server")
+    bd.command_line = lambda pid: ["llama-server.exe", "--model",
+                                   r"C:\b\blobs\sha256-dead"]
+    served = bd._collect({77: 900 * MB}, {77: "llama-server.exe"})
+finally:
+    bd.command_line = _real_cmdline
+    bd._ollama_blobs = None
+
+check("a blob digest becomes the model's name",
+      blob_label == "qwen3.8:latest", str(blob_label))
+check("a plain gguf names itself", gguf_label == "qwen3-8b-q4_k_m",
+      str(gguf_label))
+check("and the row is named after it",
+      served[0].name == "qwen3.8:latest (llama-server)", served[0].name)
+
+print("\n-- what is knowable without opening the process --")
+# The three that still answer when the handle is refused. This is what
+# made an elevated ComfyUI identifiable: it is listening on 8188.
+check("listening ports come back keyed by pid",
+      isinstance(_wp.listening_ports(), dict))
+check("so do window titles", isinstance(_wp.window_titles(), dict))
+_unopened = _wp.image_path_unopened(_os.getpid()) or ""
+check("the image path needs no handle at all",
+      _unopened.lower().endswith(".exe"), _unopened)
+check("and it is a drive letter, not a device path",
+      not _unopened.startswith("\\Device"), _unopened)
+check("it agrees with the handle route",
+      _unopened.lower() == (_wp.image_path(_os.getpid()) or "").lower(),
+      _unopened)
+
+print("\n-- show details --")
+_mine = bd.Entry("this test", 100 * MB, [_os.getpid()])
+_text = bd.details(_mine, bd.KIND_RAM)
+check("details lead with the row and its size",
+      _text.startswith("this test") and "100 MB" in _text.splitlines()[0],
+      _text.splitlines()[0])
+check("they name the pid", f"pid {_os.getpid()}" in _text)
+check("and where it is running from", ".exe" in _text)
+# Saying what could not be found matters as much: a blank where the
+# command line should be is a worse answer than a sentence.
+_ghost = bd.Entry("ghost", 1, [4])
+check("an unreadable process is explained, not left blank",
+      "unavailable" in bd.details(_ghost, bd.KIND_RAM))
+_many = bd.Entry("many", 1, list(range(9000, 9020)))
+check("a long list is capped with a count",
+      bd.details(_many, bd.KIND_RAM).rstrip().endswith(
+          f"and {20 - bd.DETAIL_PIDS} more processes"),
+      bd.details(_many, bd.KIND_RAM).rstrip().splitlines()[-1])
+
+from monitor.processes import DetailsWindow
+_win = DetailsWindow(ctx.theme, ctx.settings, "a row", "line one\nline two")
+_win.show()
+settle()
+check("the window carries the whole body",
+      "line two" in _win.text.toPlainText())
+check("it is titled with the row it came from", _win.title.text() == "a row")
+check("and the text can be copied out of it",
+      _win.text.textInteractionFlags() & Qt.TextSelectableByMouse)
+_win.close()
+settle()
+
+_dp = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
+_dp.show()
+_dp.set_entries(bd.KIND_RAM, rows)
+settle()
+_first = _dp.show_details(rows[0])
+settle()
+check("a row opens one details window",
+      _dp._details is _first and _first.isVisible())
+_second = _dp.show_details(rows[1])
+settle()
+# One at a time: a right-click that piles windows up behind each other is
+# how a monitor becomes the thing you have to tidy.
+check("a second row replaces it rather than stacking",
+      _dp._details is _second and not _first.isVisible())
+_dp.close()
+settle()
+check("closing the panel takes its details window with it",
+      not _second.isVisible())
+
 print("\n-- the process panel --")
 panel = ProcessPanel(ctx.theme, ctx.settings, bd.KIND_RAM)
 panel.place_at(QPoint(560, 200), QPoint(200, 200))

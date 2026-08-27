@@ -22,13 +22,13 @@ monitor/sampler.py       nvidia-smi + psutil, on its own thread
 monitor/gpu_pdh.py       fallback GPU readings from Windows' own counters
 monitor/breakdown.py     which processes are using a meter, and ending them
 monitor/winproc.py       the whole process table in one system call
-monitor/processes.py     the panel a row's name opens when double-clicked
+monitor/processes.py     the panel a row opens, and its details window
 monitor/meter.py         the painted 9px bar, its row, the section header
 monitor/overlay.py       the card: chrome, drag, context menu, layout
 monitor/prefs.py         Preferences, extending the template's dialog
 monitor/instance.py      single-instance guard: a second launch raises the first
 monitor/autostart.py     the HKCU Run entry behind "start with Windows"
-tests/functional.py      224 offscreen checks, no window, no pytest
+tests/functional.py      247 offscreen checks, no window, no pytest
 ico/make_icon.py         draws the icon; --build repacks GPU_Monitor.ico
 docs/                    the ia-usage design spec; the README picture and its script
 vendor/app_template      bundled copy of the shared Windows template
@@ -173,13 +173,37 @@ Where a process hosts exactly **one** service, that service is the row:
 protected name -- being protected is decided by the name, so renaming one
 would quietly make it selectable and killable.
 
-One thing it cannot do: read an **elevated** process. Same user is not
-enough -- an elevated process's security descriptor grants the
-Administrators group, which an ordinary token carries as deny-only, so
-Windows refuses even a limited handle. WMI is no way round it either
-(`Win32_Process.CommandLine` comes back empty rather than refused), and
-elevating a monitor to read one row is a bad trade. Those rows keep the
-host's name and say so on hover.
+An **inference server is named after the model it loaded**:
+`llama-server` holding 23 GB is a true statement about nothing, but its
+`--model` argument points at an Ollama blob, and the manifests beside the
+blobs turn `sha256-f5f1dd89...` back into `qwen3.8:latest`. A plain
+`.gguf` names itself.
+
+Reading an **elevated** process is the one thing none of this can do.
+Same user is not enough -- an elevated process's security descriptor
+grants the Administrators group, which an ordinary token carries as
+deny-only, so Windows refuses even a limited handle. WMI is no way round
+it either (`Win32_Process.CommandLine` comes back empty rather than
+refused), and elevating a monitor to read one row is a bad trade.
+
+But *identifying* one needs no handle at all, and three things still
+answer: the executable's path
+(`NtQuerySystemInformation(SystemProcessIdInformation)`), its **listening
+ports**, and its window titles. A port is often the whole answer -- 8188
+is ComfyUI to anyone who has ever run it -- so that is what such a row
+says on hover when it cannot say more.
+
+## Right-click a row: show details
+
+The row is one line and some of the answers are a four-hundred-character
+command line, so the rest lives behind **right-click -> Show details**: a
+window listing, per process, where it runs from, its full command line
+(or why there isn't one), what it is listening on, its window title, the
+services it hosts and the model it loaded. The text is selectable,
+because a command line is a thing you paste somewhere else.
+
+It is not modal, it closes with Esc or the X, only one is open at a time,
+and it goes away with the panel that opened it.
 
 `C:\ComfyUI\main.py` becomes *ComfyUI* rather than *main*, because half
 the projects in the world have a `main.py`; a script with a name of its

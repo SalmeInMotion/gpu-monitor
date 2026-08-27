@@ -17,8 +17,8 @@ import logging
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout,
-                               QHeaderView, QLabel, QMessageBox,
-                               QPushButton, QTreeWidget,
+                               QHeaderView, QLabel, QMenu, QMessageBox,
+                               QPlainTextEdit, QPushButton, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from . import breakdown as bd
@@ -59,6 +59,153 @@ def _elide(text, limit=TIP_CHARS):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+def paint_card(widget, card_widget):
+    """Card fill plus the shadow outside it, the same way the overlay does
+    it — and for the same reason: a QGraphicsDropShadowEffect would sit
+    behind the whole silhouette and show through.
+
+    Shared, so the details window cannot drift away from the panel it
+    belongs to."""
+    card = QRectF(card_widget.geometry())
+    if card.isEmpty():
+        return
+    p = QPainter(widget)
+    p.setRenderHint(QPainter.Antialiasing, True)
+
+    hole = QPainterPath()
+    hole.addRoundedRect(card, RADIUS, RADIUS)
+    whole = QPainterPath()
+    whole.addRect(QRectF(widget.rect()))
+    p.setClipPath(whole.subtracted(hole))
+    p.setBrush(Qt.NoBrush)
+    for step in range(GUTTER):
+        fade = (1.0 - step / float(GUTTER)) ** 2
+        pen = QPen(QColor(0, 0, 0, max(1, round(SHADOW_ALPHA * fade))))
+        pen.setWidthF(1.6)
+        p.setPen(pen)
+        p.drawRoundedRect(
+            card.adjusted(-step, -step + SHADOW_OFFSET_Y,
+                          step, step + SHADOW_OFFSET_Y),
+            RADIUS + step, RADIUS + step)
+
+    p.setClipping(False)
+    p.setPen(Qt.NoPen)
+    p.setBrush(getattr(widget, "_fill", QColor("#fafafa")))
+    p.drawRoundedRect(card, RADIUS, RADIUS)
+    p.end()
+
+
+class DetailsWindow(QWidget):
+    """Everything knowable about one row, on a right-click.
+
+    Ivan's own suggestion, and the right shape for it: a row is one line
+    and some of these answers are a 400-character command line. It is
+    **not** modal and not part of the panel stack -- a window that has to
+    be answered is exactly what trapped him once already.
+    """
+
+    WIDTH = 560
+    MAX_HEIGHT = 460
+
+    def __init__(self, theme, settings, title, body, parent=None):
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
+                         | Qt.WindowStaysOnTopHint)
+        self.theme = theme
+        self.settings = settings
+        self._fill = QColor("#fafafa")
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setWindowTitle(f"GPU Monitor - {title}")
+        self.setFixedWidth(self.WIDTH + 2 * GUTTER)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(GUTTER, GUTTER, GUTTER, GUTTER)
+        self.card = QWidget(self)
+        self.card.setObjectName("PanelCard")
+        shell.addWidget(self.card)
+
+        body_box = QVBoxLayout(self.card)
+        body_box.setContentsMargins(PAD, PAD, PAD, PAD)
+        body_box.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        self.title = QLabel(title, objectName="PanelTitle")
+        self.btn_close = ChromeButton(GLYPH_CLOSE, "Close", self.card)
+        self.btn_close.clicked.connect(self.close)
+        head.addWidget(self.title, 1)
+        head.addWidget(self.btn_close, 0)
+        body_box.addLayout(head)
+
+        self.text = QPlainTextEdit(body, self.card)
+        self.text.setObjectName("DetailsText")
+        self.text.setReadOnly(True)
+        self.text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        # Selectable on purpose: a command line is something you paste
+        # somewhere else, and there is nowhere else to get it from.
+        self.text.setTextInteractionFlags(Qt.TextSelectableByMouse
+                                          | Qt.TextSelectableByKeyboard)
+        body_box.addWidget(self.text, 1)
+
+        self.theme.changed.connect(self.apply_theme)
+        self.apply_theme()
+        self._fit(body)
+
+    def _fit(self, body):
+        rows = body.count("\n") + 1
+        metrics = self.text.fontMetrics()
+        wanted = rows * (metrics.lineSpacing() + 1) + 16
+        self.text.setFixedHeight(max(80, min(self.MAX_HEIGHT, wanted)))
+        self.adjustSize()
+
+    def apply_theme(self):
+        tokens = self.theme.tokens or {}
+        if not tokens:
+            return
+        fill = QColor(tokens["SURFACE"])
+        fill.setAlpha(max(0, min(255, round(
+            int(self.settings.get("opacity", 100)) / 100.0 * 255))))
+        self._fill = fill
+        self.setStyleSheet(f"""
+QWidget#PanelCard {{ background: transparent; }}
+QLabel#PanelTitle {{ font-size: 14px; font-weight: 500;
+                     color: {tokens['TEXT']}; background: transparent; }}
+QPlainTextEdit#DetailsText {{
+    background: transparent;
+    border: none;
+    color: {tokens['TEXT_70']};
+    font-family: {tokens['MONO_STACK']};
+    font-size: 11px;
+    selection-background-color: {tokens['ACCENT']};
+    selection-color: {tokens['ON_ACCENT']};
+}}
+QScrollBar:vertical, QScrollBar:horizontal {{
+    background: transparent; width: 8px; height: 8px; margin: 0;
+}}
+QScrollBar::handle {{ background: {tokens['SCROLL_HANDLE']};
+                      border-radius: 4px; }}
+QScrollBar::handle:hover {{ background: {tokens['SCROLL_HANDLE_HOVER']}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+""" + chrome_qss(tokens))
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802 - Qt naming
+        paint_card(self, self.card)
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt naming
+        if event.button() == Qt.LeftButton:
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt naming
+        if event.key() == Qt.Key_Escape:
+            self.close()
+            return
+        super().keyPressEvent(event)
+
+
 class ProcessPanel(QWidget):
     """A list of what is using one meter, and a way to end it.
 
@@ -86,6 +233,7 @@ class ProcessPanel(QWidget):
         self._following = False
         self._muted = "#909093"
         self._clearing = False
+        self._details = None
         self.kind = kind
         self._entries = []
         # In the stack the overlay lays out, until the user drags it out.
@@ -138,6 +286,10 @@ class ProcessPanel(QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.list.itemSelectionChanged.connect(self._sync_button)
+        # Ivan's own suggestion: a row is one line, and some of what is
+        # knowable about it is a 400-character command line.
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._row_menu)
         body.addWidget(self.list, 1)
 
         body.addSpacing(10)
@@ -200,6 +352,11 @@ class ProcessPanel(QWidget):
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         self._timer.stop()
+        if self._details is not None:
+            # It belongs to this panel; a details window outliving the
+            # list it came from is an orphan nobody can trace back.
+            self._details.close()
+            self._details = None
         super().closeEvent(event)
         self.closed.emit(self.kind)
 
@@ -348,6 +505,53 @@ class ProcessPanel(QWidget):
         self.adjustSize()
 
     # --- ending things -----------------------------------------------------
+
+    def _row_menu(self, point):
+        """Right-click on a row: the long answer, for whoever wants it."""
+        item = self.list.itemAt(point)
+        if item is None:
+            return
+        entry = next((e for e in self._entries if e.name == item.text(0)), None)
+        if entry is None:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(self._menu_qss(self.theme.tokens or {}))
+        show = menu.addAction("Show details")
+        chosen = menu.exec(self.list.viewport().mapToGlobal(point))
+        if chosen is show:
+            self.show_details(entry)
+
+    def show_details(self, entry):
+        """Open (or replace) the details window for one row.
+
+        One at a time: a right-click that quietly piles up windows behind
+        each other is how a monitor becomes the thing you have to tidy.
+        """
+        body = bd.details(entry, self.kind)
+        if self._details is not None:
+            self._details.close()
+        self._details = DetailsWindow(self.theme, self.settings,
+                                      entry.name, body)
+        self._details.destroyed.connect(self._forget_details)
+        here = self.frameGeometry()
+        self._details.move(here.left(), here.bottom() + STACK_GAP)
+        self._details.show()
+        self._details.raise_()
+        return self._details
+
+    def _forget_details(self, *_):
+        self._details = None
+
+    def _menu_qss(self, t):
+        if not t:
+            return ""
+        return f"""
+QMenu {{ background: {t['SURFACE']}; color: {t['TEXT']};
+         border: 1px solid {t['DIVIDER']}; border-radius: 8px;
+         padding: 4px; font-family: "Segoe UI"; font-size: 12px; }}
+QMenu::item {{ padding: 5px 14px; border-radius: 5px; }}
+QMenu::item:selected {{ background: {t['ACCENT']}; color: {t['ON_ACCENT']}; }}
+"""
 
     def _selected_entries(self):
         names = {i.text(0) for i in self.list.selectedItems()}
@@ -520,33 +724,4 @@ QPushButton#PanelDanger:disabled {{
 """ + chrome_qss(t)
 
     def paintEvent(self, event):  # noqa: N802 - Qt naming
-        """Card fill plus the shadow outside it, the same way the overlay
-        does it — and for the same reason: a QGraphicsDropShadowEffect
-        would sit behind the whole silhouette and show through."""
-        card = QRectF(self.card.geometry())
-        if card.isEmpty():
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-
-        hole = QPainterPath()
-        hole.addRoundedRect(card, RADIUS, RADIUS)
-        whole = QPainterPath()
-        whole.addRect(QRectF(self.rect()))
-        p.setClipPath(whole.subtracted(hole))
-        p.setBrush(Qt.NoBrush)
-        for step in range(GUTTER):
-            fade = (1.0 - step / float(GUTTER)) ** 2
-            pen = QPen(QColor(0, 0, 0, max(1, round(SHADOW_ALPHA * fade))))
-            pen.setWidthF(1.6)
-            p.setPen(pen)
-            p.drawRoundedRect(
-                card.adjusted(-step, -step + SHADOW_OFFSET_Y,
-                              step, step + SHADOW_OFFSET_Y),
-                RADIUS + step, RADIUS + step)
-
-        p.setClipping(False)
-        p.setPen(Qt.NoPen)
-        p.setBrush(getattr(self, "_fill", QColor("#fafafa")))
-        p.drawRoundedRect(card, RADIUS, RADIUS)
-        p.end()
+        paint_card(self, self.card)

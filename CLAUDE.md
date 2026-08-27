@@ -665,6 +665,67 @@ the services inside it, biggest first, `MAX_SERVICES_LISTED` of them plus
   tooltip with "Windows needs this one", which would have thrown away the
   one list that matters most. It appends now.
 
+### A handle is for reading a process, not for identifying one
+
+2026-08-27, on Ivan's "python sigue siendo opaco, no tenemos manera de
+averiguar que hay adentro?" -- about the *elevated* ComfyUI the section
+above gave up on. The section above is still right about command lines
+and wrong about the conclusion: **three identifying facts need no handle
+at all**, and they are enough.
+
+- **`winproc.image_path_unopened()`** --
+  `NtQuerySystemInformation(SystemProcessIdInformation, 88)` takes a
+  **pid**, not a handle, so it answers for processes we may not open. Two
+  calls: the first is *expected* to fail with
+  `STATUS_INFO_LENGTH_MISMATCH`, reporting how much room the name needs.
+  It answers in device paths (`\Device\HarddiskVolume3\...`), so
+  `_to_drive_letter()` maps them back through `QueryDosDeviceW`.
+- **`winproc.listening_ports()`** -- `GetExtendedTcpTable` /
+  `GetExtendedUdpTable` with the OWNER_PID classes. This is what actually
+  cracked the case: the unreadable python is **listening on tcp 8188**,
+  which is ComfyUI to anyone who has ever run it. The port lives in
+  *network* byte order inside a DWORD, hence `_network_port()`.
+- **`winproc.window_titles()`** -- `EnumWindows` +
+  `GetWindowThreadProcessId`. Nothing for a headless server, everything
+  for a GUI app.
+
+So `OUT_OF_REACH` now carries the listening ports when there are any: the
+row still cannot be *named*, but it stops being a dead end.
+
+#### Inference servers: the model is the identity
+
+`llama-server` at 23 GB says nothing. Its `--model` argument points at
+`...\.ollama\models\blobs\sha256-f5f1dd89...`, and the **manifests**
+beside the blobs map digests back to names -- the manifest's own path
+*is* the name (`registry.ollama.ai/library/qwen3.8/latest` ->
+`qwen3.8:latest`). `MODEL_HOSTS` is the second family after
+`GENERIC_HOSTS`, handled by `describe_model()`.
+
+- The blob map is built once and **rebuilt only on a miss**, which is the
+  only thing that can mean a model was pulled since. Do not put it on a
+  timer.
+- A path that is not an Ollama blob is a plain `.gguf` and names itself.
+
+#### The details window
+
+Ivan's own suggestion, and the right shape: `processes.DetailsWindow`,
+opened from a right-click on a row. `breakdown.details()` builds the text
+with **no Qt in it**, like everything else in that module.
+
+- **It is not modal.** A window that has to be answered is exactly what
+  trapped him once already (see the ping-pong section). Esc or the X.
+- **One at a time**, replaced rather than stacked, and closed by the
+  panel's `closeEvent` -- a details window outliving the list it came
+  from is an orphan nobody can trace back.
+- **It says what it could not find.** A blank where the command line
+  should be is a worse answer than a sentence explaining why there isn't
+  one.
+- `paint_card()` was pulled out of `ProcessPanel.paintEvent` so both
+  windows paint from one place and cannot drift apart.
+- The QSS uses the template's own tokens -- `MONO_STACK`, `TEXT_70`,
+  `SCROLL_HANDLE`. There is no `TEXT_75` or `TEXT_25`; check
+  `theme.tokens.keys()` before inventing one.
+
 ### Ending processes: what protects Ivan from this
 
 - `breakdown.PROTECTED` is the list of names that are shown but never

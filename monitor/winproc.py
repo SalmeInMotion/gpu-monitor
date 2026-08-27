@@ -110,6 +110,15 @@ try:
 except (OSError, AttributeError):  # pragma: no cover - not Windows
     _advapi32 = None
 
+try:
+    _iphlpapi = ctypes.WinDLL("iphlpapi.dll")
+    _user32 = ctypes.WinDLL("user32.dll")
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                     wintypes.LPARAM)
+except (OSError, AttributeError):  # pragma: no cover - not Windows
+    _iphlpapi = _user32 = None
+    WNDENUMPROC = None
+
 
 def snapshot():
     """[(pid, name, working_set_bytes, cpu_100ns), ...] or None.
@@ -256,15 +265,189 @@ def command_line(pid):
         ctypes.windll.kernel32.LocalFree(argv)
 
 
+# Reading a process needs a handle. *Identifying* one does not, and these
+# three are what is left when the handle is refused -- the case that made
+# an elevated ComfyUI show up as a bare "python" holding 30 GB.
+
+SYSTEM_PROCESS_ID_INFORMATION = 88
+
+
+class SYSTEM_PROCESS_ID_INFO(ctypes.Structure):
+    _fields_ = [("ProcessId", ctypes.c_void_p),
+                ("ImageName", UNICODE_STRING)]
+
+
+_dos_drives = None
+
+
+def _to_drive_letter(nt_path):
+    r"""\Device\HarddiskVolume3\Users\... -> C:\Users\...
+
+    The kernel answers in device paths; nobody wants to read one.
+    """
+    global _dos_drives
+    if not nt_path or not nt_path.startswith("\\Device\\"):
+        return nt_path
+    if _dos_drives is None or not any(
+            nt_path.lower().startswith(d.lower()) for d in _dos_drives):
+        _dos_drives = {}
+        if _kernel32 is not None:
+            target = ctypes.create_unicode_buffer(1024)
+            for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                if ctypes.windll.kernel32.QueryDosDeviceW(
+                        f"{letter}:", target, 1024):
+                    _dos_drives[target.value] = f"{letter}:"
+    for device, letter in (_dos_drives or {}).items():
+        if nt_path.lower().startswith(device.lower() + "\\"):
+            return letter + nt_path[len(device):]
+    return nt_path
+
+
+def image_path_unopened(pid):
+    """The executable's path without opening the process at all.
+
+    SystemProcessIdInformation takes a pid rather than a handle, so it
+    answers for processes we are not allowed to touch. Two calls: the
+    first is expected to fail, reporting how much room the name needs.
+    """
+    if _ntdll is None or not pid:
+        return None
+    try:
+        info = SYSTEM_PROCESS_ID_INFO()
+        info.ProcessId = ctypes.c_void_p(pid)
+        info.ImageName.Length = 0
+        info.ImageName.MaximumLength = 0
+        info.ImageName.Buffer = None
+        status = _ntdll.NtQuerySystemInformation(
+            SYSTEM_PROCESS_ID_INFORMATION, ctypes.byref(info),
+            ctypes.sizeof(info), None)
+        if status != STATUS_INFO_LENGTH_MISMATCH:
+            return None
+        room = info.ImageName.MaximumLength
+        if not room or room > 1 << 16:
+            return None
+        buffer = ctypes.create_unicode_buffer(room // 2 + 1)
+        info.ImageName.Buffer = ctypes.cast(buffer, ctypes.c_void_p)
+        if _ntdll.NtQuerySystemInformation(
+                SYSTEM_PROCESS_ID_INFORMATION, ctypes.byref(info),
+                ctypes.sizeof(info), None):
+            return None
+        return _to_drive_letter(
+            ctypes.wstring_at(info.ImageName.Buffer, info.ImageName.Length // 2))
+    except Exception as exc:            # pragma: no cover - shape change
+        log.debug("unopened image path for %s: %s", pid, exc)
+        return None
+
+
+AF_INET = 2
+TCP_TABLE_OWNER_PID_ALL = 5
+UDP_TABLE_OWNER_PID = 1
+MIB_TCP_STATE_LISTEN = 2
+
+
+class MIB_TCPROW_OWNER_PID(ctypes.Structure):
+    _fields_ = [("dwState", wintypes.DWORD),
+                ("dwLocalAddr", wintypes.DWORD),
+                ("dwLocalPort", wintypes.DWORD),
+                ("dwRemoteAddr", wintypes.DWORD),
+                ("dwRemotePort", wintypes.DWORD),
+                ("dwOwningPid", wintypes.DWORD)]
+
+
+class MIB_UDPROW_OWNER_PID(ctypes.Structure):
+    _fields_ = [("dwLocalAddr", wintypes.DWORD),
+                ("dwLocalPort", wintypes.DWORD),
+                ("dwOwningPid", wintypes.DWORD)]
+
+
+def _network_port(raw):
+    """The tables keep the port in network order inside a DWORD."""
+    return ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
+
+
+def _connection_table(getter, row_type, table_class):
+    size = wintypes.DWORD(0)
+    getter(None, ctypes.byref(size), False, AF_INET, table_class, 0)
+    if not size.value:
+        return []
+    buffer = ctypes.create_string_buffer(size.value)
+    if getter(buffer, ctypes.byref(size), False, AF_INET, table_class, 0):
+        return []
+    count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    if not count:
+        return []
+    rows = ctypes.cast(ctypes.byref(buffer, ctypes.sizeof(wintypes.DWORD)),
+                       ctypes.POINTER(row_type * count))
+    return list(rows.contents)
+
+
+def listening_ports():
+    """{pid: [("tcp", 8188), ...]} -- what each process is listening on.
+
+    No handle involved, so this works on the processes nothing else will
+    talk about. A port is often the whole answer: 8188 is ComfyUI to
+    anyone who has ever run it.
+    """
+    if _iphlpapi is None:
+        return {}
+    out = {}
+    try:
+        for row in _connection_table(_iphlpapi.GetExtendedTcpTable,
+                                     MIB_TCPROW_OWNER_PID,
+                                     TCP_TABLE_OWNER_PID_ALL):
+            if row.dwState == MIB_TCP_STATE_LISTEN:
+                out.setdefault(row.dwOwningPid, set()).add(
+                    ("tcp", _network_port(row.dwLocalPort)))
+        for row in _connection_table(_iphlpapi.GetExtendedUdpTable,
+                                     MIB_UDPROW_OWNER_PID,
+                                     UDP_TABLE_OWNER_PID):
+            out.setdefault(row.dwOwningPid, set()).add(
+                ("udp", _network_port(row.dwLocalPort)))
+    except Exception as exc:            # pragma: no cover
+        log.debug("connection tables: %s", exc)
+        return {}
+    return {pid: sorted(ports) for pid, ports in out.items()}
+
+
+def window_titles():
+    """{pid: [visible window titles]} -- also handle-free."""
+    if _user32 is None:
+        return {}
+    out = {}
+
+    def visit(hwnd, _):
+        try:
+            if not _user32.IsWindowVisible(hwnd):
+                return True
+            owner = wintypes.DWORD()
+            _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            length = _user32.GetWindowTextLengthW(hwnd)
+            if length:
+                text = ctypes.create_unicode_buffer(length + 1)
+                _user32.GetWindowTextW(hwnd, text, length + 1)
+                if text.value.strip():
+                    out.setdefault(owner.value, []).append(text.value)
+        except Exception:               # pragma: no cover
+            pass
+        return True
+
+    try:
+        _user32.EnumWindows(WNDENUMPROC(visit), 0)
+    except Exception as exc:            # pragma: no cover
+        log.debug("window titles: %s", exc)
+    return out
+
+
 def image_path(pid):
     """Where the running executable lives, or None.
 
     QueryFullProcessImageNameW for the same reason as above: psutil's
-    `exe()` needs rights an elevated target does not hand over.
+    `exe()` needs rights an elevated target does not hand over. Falls back
+    to the handle-free route when even that is refused.
     """
     handle = _open(pid)
     if handle is None:
-        return None
+        return image_path_unopened(pid)
     try:
         size = wintypes.DWORD(32768)
         buffer = ctypes.create_unicode_buffer(size.value)
