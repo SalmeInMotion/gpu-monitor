@@ -239,10 +239,26 @@ target, not a workshop**. Nobody edits a file there by hand again.
   ever run commands against by accident. History lives here and on GitHub
   only now. If a `.git` folder ever reappears under the C: copy, that is a
   bug in whatever put it there, not a second workshop to use.
-- **Autostart, the shortcuts, and the live running card need no change** —
-  `monitor\autostart.py` resolves its own script path via `__file__` at
-  the C: location, so the Run entry and every shortcut keep working exactly
-  as before, unaware anything moved.
+- **Autostart had to be fixed, not left alone.** The first version of this
+  cutover assumed `monitor\autostart.py` resolving its script path via
+  `__file__` was harmless because the C: copy's `__file__` still pointed
+  at C:. It missed that the same module runs constantly from P: during
+  development, and `is_stale()` treats *any* mismatch between the running
+  copy's own path and the registered one as a path needing repair — which
+  it is, when a Python upgrade moves the interpreter, but not when the
+  "wrong" path is simply P:, opened for testing. Confirmed live within
+  minutes of the cutover: a smoke-test launch from P: had its Preferences
+  Saved, and the real `HKCU\...\Run\GPU Monitor` entry was rewritten to
+  `P:\IA\Tools\Apps\GPU_Monitor\gpu_monitor.py` — exactly the failure this
+  whole P/C split exists to prevent, since P: is not guaranteed mounted at
+  logon. Fixed by hardcoding `DEPLOYMENT_ROOT` in `autostart.py` instead of
+  deriving it from `__file__`: autostart may only ever name the C: copy,
+  no matter which copy's Preferences dialog wrote it. Verified by rerunning
+  `tests\functional.py` from P: and confirming its own captured log lines
+  show `launch_command()` still building the C: path.
+- The shortcuts needed no change — they, and `GPU_Monitor.bat`, always
+  pointed at the literal C: path directly and never resolved anything at
+  runtime.
 - **Verification for this cutover**: 360/360 files byte-identical
   (md5) between C: and P: at copy time; `git rev-parse HEAD`,
   `git status`, `git fsck` all matched; `tests\functional.py` passed
