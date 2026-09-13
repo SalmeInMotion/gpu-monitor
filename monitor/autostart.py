@@ -30,8 +30,20 @@ APPROVED_KEY = (r"Software\Microsoft\Windows\CurrentVersion\Explorer"
 # module at a scratch name and never touch the real startup entry.
 VALUE_NAME = "GPU Monitor"
 
-APP_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "gpu_monitor.py")
+# Deliberately NOT derived from __file__. Since the 2026-09-13 P/C split,
+# this module is imported from two different copies: the editable source
+# on P (where it runs constantly while testing) and the deployment on C
+# (the only one autostart may ever depend on). Deriving this from __file__
+# meant "start with Windows" silently repointed itself at whichever copy
+# last had its Preferences dialog Saved — is_stale() below exists to
+# *repair* a path that has drifted, and a P-launched dev session made
+# every Save look like exactly that. It happened once, minutes after the
+# cutover: a smoke-test run from P got Saved, and the real Run entry
+# pointed at P until the next logon would have found it on a
+# not-yet-mounted drive. Hardcode the one path autostart may ever name.
+DEPLOYMENT_ROOT = r"C:\IA\Tools\Apps\GPU_Monitor"
+
+APP_SCRIPT = os.path.join(DEPLOYMENT_ROOT, "gpu_monitor.py")
 
 if os.name == "nt":
     import winreg
