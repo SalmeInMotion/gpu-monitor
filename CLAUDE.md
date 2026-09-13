@@ -200,10 +200,9 @@ things; the app attaches automatically via the template's `create_app()`.
 ## It is a git repo now, and it is public
 
 `https://github.com/SalmeInMotion/gpu-monitor`, `main`, public, created
-2026-08-26. The working copy at `C:\IA\Tools\Apps\GPU_Monitor` **is** the
-repo — there is no separate clone. So a change here is a change to a
-published tool: commit it and push it, rather than leaving the two to
-drift.
+2026-08-26. **This P: copy is the repo now** (see the section below) — a
+change here is a change to a published tool: commit it and push it,
+rather than leaving the two to drift.
 
 Deliberately not tracked (see `.gitignore`): `_backups\`,
 `tests\_scratch_appdata\`, `_tip.png`, and `vram_monitor_config.json` —
@@ -213,6 +212,51 @@ position, and `migrate_legacy()` only ever reads it on his machine.
 `CLAUDE.md` *is* tracked, on purpose: the rules above are what stop the
 next session breaking his shortcuts, and they are worth as much to a
 clone as to this copy.
+
+## P: is the source, C: is the deployment — moved 2026-09-13
+
+The editable source moved from `C:\IA\Tools\Apps\GPU_Monitor` to
+`P:\IA\Tools\Apps\GPU_Monitor` (see `P:\IA\Tools\CLAUDE.md`'s default
+project-location policy). **Edit, commit and push from here.**
+
+`C:\IA\Tools\Apps\GPU_Monitor` was deliberately **not** renamed, quarantined,
+or emptied — the standard move-to-p playbook does that to the old source,
+but this project's own rule above exists precisely to stop that folder ever
+moving: every shortcut (desktop, taskbar, Start menu) and the
+`HKCU\...\Run\GPU Monitor` autostart entry point at that exact path, and a
+2026-08-16 incident already showed what a silent rename there costs. So
+instead of quarantining it, its role changed: it is now a **deployment
+target, not a workshop**. Nobody edits a file there by hand again.
+
+- **Deploy a change with `tools\deploy_to_c.ps1`**, run from this P: copy.
+  It robocopies the working tree onto `C:\IA\Tools\Apps\GPU_Monitor`,
+  excluding `.git` and the same local/scratch folders the tests already
+  exclude. Restart the running card afterwards (close it properly — see
+  "Force-killing loses the last drag" above — then relaunch
+  `GPU_Monitor.bat`) so it picks up the new files; Python does not hot-reload.
+- **C:'s own `.git` was removed** on cutover (2026-09-13) — before that,
+  the folder still had a full, independent git history that nobody should
+  ever run commands against by accident. History lives here and on GitHub
+  only now. If a `.git` folder ever reappears under the C: copy, that is a
+  bug in whatever put it there, not a second workshop to use.
+- **Autostart, the shortcuts, and the live running card need no change** —
+  `monitor\autostart.py` resolves its own script path via `__file__` at
+  the C: location, so the Run entry and every shortcut keep working exactly
+  as before, unaware anything moved.
+- **Verification for this cutover**: 360/360 files byte-identical
+  (md5) between C: and P: at copy time; `git rev-parse HEAD`,
+  `git status`, `git fsck` all matched; `tests\functional.py` passed
+  from P: (`ALL PASS`); a real launch from
+  `P:\IA\Tools\Apps\GPU_Monitor\gpu_monitor.py` came up, centred itself,
+  and answered the Supervisor bridge before being closed again.
+- **Rollback**, if this ever needs reversing: `C:\IA\Tools\Apps\GPU_Monitor`
+  still holds a fully working, byte-identical copy of the app (deployment
+  copies are never behind — deploy before you rely on it). There is
+  nothing under `C:` to un-rename; reverting just means going back to
+  editing there and retiring `P:` as the source, the exact opposite of
+  this cutover.
+- AI-cachofo's install (see below) is untouched — it is an independent
+  `git pull` clone from GitHub, not from either of these two folders.
 
 ## Two GPU backends, and why rows disappear
 
